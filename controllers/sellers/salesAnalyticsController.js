@@ -6,7 +6,7 @@ import { Review } from "../../models/common/review.js";
 import { Product } from "../../models/seller/product.js";
 import { getPresignedUrl } from "../../utils/awsS3.js";
 import catchAsync from "../../utils/catchasync.js";
-import { getPresignedUrl } from "../../utils/awsS3.js";
+// import { getPresignedUrl } from "../../utils/awsS3.js";
 
 export const getSellerPerformanceStats = catchAsync(async (req, res, next) => {
   const sellerId = req.user._id.toString();

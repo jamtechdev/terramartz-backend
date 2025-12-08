@@ -9,7 +9,7 @@ import { Purchase } from "../../models/customers/purchase.js";
 import { ProductPerformance } from "../../models/seller/productPerformance.js";
 import { Farm } from "../../models/seller/farm.js";
 import { User } from "../../models/users.js";
-import { getPresignedUrl } from "../../utils/awsS3.js";
+// import { getPresignedUrl } from "../../utils/awsS3.js";
 import catchAsync from "../../utils/catchasync.js";
 import AppError from "../../utils/apperror.js";
 import APIFeatures from "../../utils/apiFeatures.js";

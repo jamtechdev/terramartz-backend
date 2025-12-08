@@ -4,7 +4,7 @@ import { User } from "../../models/users.js";
 import { getPresignedUrl } from "../../utils/awsS3.js";
 import catchAsync from "../../utils/catchasync.js";
 import AppError from "../../utils/apperror.js";
-import { getPresignedUrl } from "../../utils/awsS3.js";
+// import { getPresignedUrl } from "../../utils/awsS3.js";
 
 export const getProductByProductSlug = catchAsync(async (req, res, next) => {
   const { productSlug } = req.params;
