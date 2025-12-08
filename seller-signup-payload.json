@@ -1,0 +1,40 @@
+{
+  "role": "seller",
+  "accountType": "business",
+  "email": "seller@example.com",
+  "password": "Password123!",
+  "passwordConfirm": "Password123!",
+  "firstName": "John",
+  "middleName": "D",
+  "lastName": "Doe",
+  "phoneNumber": "+1234567890",
+  "countryCode": "+1",
+  "lineAddress": "123 Main Street",
+  "apartmentOrBuildingNumber": "Apt 4B",
+  "city": "Toronto",
+  "zipCode": "M5H 2N2",
+  "user_region": "Ontario",
+  "businessDetails": {
+    "businessName": "Fresh Farm Produce",
+    "businessLocation": "123 Farm Road",
+    "numberOfEmployees": 10,
+    "licenseNumber": "LIC123456",
+    "city": "Toronto",
+    "state": "Ontario",
+    "postalCode": "M5H 2N2",
+    "country": "Canada"
+  },
+  "sellerProfile": {
+    "shopName": "Fresh Farm Shop",
+    "shopSlug": "fresh-farm-shop",
+    "shippingCharges": 5.99,
+    "freeShippingThreshold": 50.00
+  },
+  "location": {
+    "type": "Point",
+    "coordinates": [-79.3832, 43.6532]
+  },
+  "termsAccepted": true,
+  "receiveMarketingEmails": false
+}
+

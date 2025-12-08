@@ -1,0 +1,262 @@
+{
+  "postSubmitInquiry": {
+    "endpoint": "POST /api/contact/submit",
+    "description": "Submit a contact inquiry (Public - No Auth Required)",
+    "authentication": "Not Required",
+    "contentType": "application/json",
+    
+    "requiredFields": [
+      "fullName",
+      "email",
+      "inquiryType",
+      "subject",
+      "message"
+    ],
+    
+    "optionalFields": [
+      "phoneNumber"
+    ],
+    
+    "payload": {
+      "fullName": "John Doe",
+      "email": "john@example.com",
+      "phoneNumber": "(555) 123-4567",
+      "inquiryType": "General Inquiry",
+      "subject": "How can we help you?",
+      "message": "Tell us more about your inquiry..."
+    },
+    
+    "inquiryTypeOptions": [
+      "General Inquiry",
+      "Product Question",
+      "Order Support",
+      "Partnership",
+      "Complaint",
+      "Feedback",
+      "Other"
+    ],
+    
+    "fieldDescriptions": {
+      "fullName": "User's full name (required, max 100 chars)",
+      "email": "User's email address (required, must be valid email)",
+      "phoneNumber": "User's phone number (optional, can include +, -, spaces, parentheses)",
+      "inquiryType": "Type of inquiry (required, must be one of the options)",
+      "subject": "Subject of the inquiry (required, max 200 chars)",
+      "message": "Detailed message (required, max 2000 chars)"
+    },
+    
+    "successResponse": {
+      "status": "success",
+      "message": "Your inquiry has been submitted successfully. We'll get back to you soon!",
+      "data": {
+        "inquiry": {
+          "_id": "inquiry-uuid-id",
+          "fullName": "John Doe",
+          "email": "john@example.com",
+          "inquiryType": "General Inquiry",
+          "subject": "How can we help you?",
+          "status": "pending",
+          "createdAt": "2025-01-15T10:30:00.000Z"
+        }
+      }
+    },
+    
+    "errorResponse": {
+      "status": "error",
+      "message": "Please provide all required fields: fullName, email, inquiryType, subject, and message"
+    },
+    
+    "examplePayloads": {
+      "minimal": {
+        "fullName": "Jane Smith",
+        "email": "jane@example.com",
+        "inquiryType": "Product Question",
+        "subject": "Question about organic tomatoes",
+        "message": "I want to know if your tomatoes are certified organic."
+      },
+      "withPhone": {
+        "fullName": "John Doe",
+        "email": "john@example.com",
+        "phoneNumber": "+1-555-123-4567",
+        "inquiryType": "Order Support",
+        "subject": "Order delivery issue",
+        "message": "My order #12345 was not delivered on time. Please help."
+      },
+      "partnership": {
+        "fullName": "Farm Owner",
+        "email": "farmer@example.com",
+        "phoneNumber": "(555) 987-6543",
+        "inquiryType": "Partnership",
+        "subject": "Interested in becoming a partner farmer",
+        "message": "I own a local farm and would like to partner with your platform. Please contact me to discuss partnership opportunities."
+      }
+    }
+  },
+  
+  "getAllInquiries": {
+    "endpoint": "GET /api/contact",
+    "description": "Get all contact inquiries (Authenticated - Admin/Seller Only)",
+    "authentication": "Bearer Token Required",
+    "contentType": "application/json",
+    
+    "queryParameters": {
+      "page": 1,
+      "limit": 10,
+      "sort": "-createdAt",
+      "status": "pending",
+      "inquiryType": "General Inquiry",
+      "email": "user@example.com",
+      "fields": "fullName,email,inquiryType,subject,status,createdAt"
+    },
+    
+    "filterOptions": {
+      "status": ["pending", "in_progress", "resolved", "closed"],
+      "inquiryType": ["General Inquiry", "Product Question", "Order Support", "Partnership", "Complaint", "Feedback", "Other"]
+    },
+    
+    "exampleUrls": [
+      "GET /api/contact?page=1&limit=10",
+      "GET /api/contact?status=pending&sort=-createdAt",
+      "GET /api/contact?inquiryType=Partnership&status=pending",
+      "GET /api/contact?email=user@example.com"
+    ],
+    
+    "successResponse": {
+      "status": "success",
+      "results": 10,
+      "total": 150,
+      "pagination": {
+        "page": 1,
+        "limit": 10,
+        "totalPages": 15
+      },
+      "data": {
+        "inquiries": [
+          {
+            "_id": "inquiry-id-1",
+            "fullName": "John Doe",
+            "email": "john@example.com",
+            "phoneNumber": "(555) 123-4567",
+            "inquiryType": "General Inquiry",
+            "subject": "How can we help you?",
+            "message": "Tell us more about your inquiry...",
+            "status": "pending",
+            "responseNotes": null,
+            "respondedAt": null,
+            "createdAt": "2025-01-15T10:30:00.000Z",
+            "updatedAt": "2025-01-15T10:30:00.000Z"
+          }
+        ]
+      }
+    }
+  },
+  
+  "getInquiryById": {
+    "endpoint": "GET /api/contact/:id",
+    "description": "Get single inquiry by ID (Authenticated)",
+    "authentication": "Bearer Token Required",
+    
+    "urlParameters": {
+      "id": "inquiry-uuid-id"
+    },
+    
+    "exampleUrl": "GET /api/contact/inquiry-uuid-id",
+    
+    "successResponse": {
+      "status": "success",
+      "data": {
+        "inquiry": {
+          "_id": "inquiry-uuid-id",
+          "fullName": "John Doe",
+          "email": "john@example.com",
+          "phoneNumber": "(555) 123-4567",
+          "inquiryType": "General Inquiry",
+          "subject": "How can we help you?",
+          "message": "Tell us more about your inquiry...",
+          "status": "pending",
+          "responseNotes": null,
+          "respondedAt": null,
+          "createdAt": "2025-01-15T10:30:00.000Z",
+          "updatedAt": "2025-01-15T10:30:00.000Z"
+        }
+      }
+    }
+  },
+  
+  "updateInquiryStatus": {
+    "endpoint": "PATCH /api/contact/:id/status",
+    "description": "Update inquiry status (Authenticated - Admin/Seller Only)",
+    "authentication": "Bearer Token Required",
+    "contentType": "application/json",
+    
+    "urlParameters": {
+      "id": "inquiry-uuid-id"
+    },
+    
+    "payload": {
+      "status": "in_progress",
+      "responseNotes": "We are looking into this issue and will respond soon."
+    },
+    
+    "statusOptions": [
+      "pending",
+      "in_progress",
+      "resolved",
+      "closed"
+    ],
+    
+    "fieldDescriptions": {
+      "status": "New status (required, must be one of the options)",
+      "responseNotes": "Internal notes about the response (optional)"
+    },
+    
+    "successResponse": {
+      "status": "success",
+      "message": "Inquiry status updated successfully",
+      "data": {
+        "inquiry": {
+          "_id": "inquiry-uuid-id",
+          "fullName": "John Doe",
+          "email": "john@example.com",
+          "status": "in_progress",
+          "responseNotes": "We are looking into this issue and will respond soon.",
+          "respondedAt": null,
+          "updatedAt": "2025-01-15T11:00:00.000Z"
+        }
+      }
+    }
+  },
+  
+  "apiSummary": {
+    "baseUrl": "/api/contact",
+    "endpoints": [
+      {
+        "method": "POST",
+        "path": "/submit",
+        "auth": false,
+        "description": "Submit contact inquiry (Public)"
+      },
+      {
+        "method": "GET",
+        "path": "/",
+        "auth": true,
+        "description": "Get all inquiries (Authenticated)"
+      },
+      {
+        "method": "GET",
+        "path": "/:id",
+        "auth": true,
+        "description": "Get single inquiry (Authenticated)"
+      },
+      {
+        "method": "PATCH",
+        "path": "/:id/status",
+        "auth": true,
+        "description": "Update inquiry status (Authenticated)"
+      }
+    ]
+  }
+}
+
+
+

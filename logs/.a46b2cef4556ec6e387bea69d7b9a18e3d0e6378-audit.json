@@ -1,0 +1,15 @@
+{
+    "keep": {
+        "days": true,
+        "amount": 14
+    },
+    "auditLog": "E:\\Application Code\\Fiverr_Group_Project\\TerramartzProject\\Frontend_With_Backend\\UpdatedBackend\\logs\\.a46b2cef4556ec6e387bea69d7b9a18e3d0e6378-audit.json",
+    "files": [
+        {
+            "date": 1764527219120,
+            "name": "E:\\Application Code\\Fiverr_Group_Project\\TerramartzProject\\Frontend_With_Backend\\UpdatedBackend\\logs\\app-2025-12-01.log",
+            "hash": "02d4e65a627fc834db2f2dfe4c2b1be342eb7b3b32d006cbc05d2ba236005325"
+        }
+    ],
+    "hashType": "sha256"
+}

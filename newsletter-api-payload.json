@@ -1,0 +1,54 @@
+{
+  "postSubscribe": {
+    "endpoint": "POST /api/newsletter/subscribe",
+    "description": "Subscribe to newsletter (Public - No Auth Required)",
+    "contentType": "application/json",
+    "payload": {
+      "email": "user@example.com"
+    },
+    "successResponse": {
+      "status": "success",
+      "message": "Subscribed successfully!"
+    },
+    "errorResponse": {
+      "status": "error",
+      "message": "Already subscribed"
+    }
+  },
+  "getSubscribers": {
+    "endpoint": "GET /api/newsletter/subscribers",
+    "description": "Get all newsletter subscribers (Authenticated)",
+    "authentication": "Bearer Token Required",
+    "queryParameters": {
+      "page": 1,
+      "limit": 10,
+      "sort": "createdAt",
+      "fields": "email,createdAt"
+    },
+    "exampleUrl": "GET /api/newsletter/subscribers?page=1&limit=10&sort=-createdAt",
+    "successResponse": {
+      "status": "success",
+      "results": 10,
+      "total": 150,
+      "data": {
+        "subscribers": [
+          {
+            "_id": "newsletter-id-1",
+            "email": "user1@example.com",
+            "createdAt": "2025-01-15T10:30:00.000Z",
+            "updatedAt": "2025-01-15T10:30:00.000Z"
+          },
+          {
+            "_id": "newsletter-id-2",
+            "email": "user2@example.com",
+            "createdAt": "2025-01-14T09:20:00.000Z",
+            "updatedAt": "2025-01-14T09:20:00.000Z"
+          }
+        ]
+      }
+    }
+  }
+}
+
+
+
