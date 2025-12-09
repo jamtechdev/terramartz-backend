@@ -25,7 +25,11 @@ export const sendEmailVerificationOtp = async (req, res, next) => {
     return res.status(200).json({
       status: "Success",
       message: "OTP sent to email",
-      // emailOtp: verifyDocs?.emailOtp ? verifyDocs?.emailOtp : "",
+      // Show OTP in development mode for testing
+      ...(process.env.NODE_ENV === "development" && {
+        emailOtp: verifyDocs.emailOtp,
+        expiresAt: new Date(verifyDocs.emailOtpExpiresAt).toISOString(),
+      }),
     });
   } catch (error) {
     console.error("❌ Email sending error:", error);
@@ -39,7 +43,14 @@ export const sendEmailVerificationOtp = async (req, res, next) => {
   }
 };
 export const verifyEmail = async (req, res, next) => {
-  const { email, emailOtp } = req.body;
+  // Accept both emailOtp (camelCase) and emailotp (lowercase) from frontend
+  const { email, emailOtp, emailotp } = req.body;
+  const otp = emailOtp || emailotp; // Use whichever is provided
+  
+  if (!email || !otp) {
+    return next(new AppError("Email and OTP are required", 400));
+  }
+
   try {
     const verifyDocs = await Verify.findOne({ email: email });
 
@@ -48,11 +59,37 @@ export const verifyEmail = async (req, res, next) => {
         .status(404)
         .json({ message: "Email not found. Please check and try again." });
 
-    if (
-      verifyDocs.emailOtp !== emailOtp ||
-      new Date(verifyDocs.emailOtpExpiresAt).getTime() < Date.now()
-    ) {
-      return next(new AppError("Invalid or expired OTP", 400));
+    // Convert both to string for comparison (model stores as Number, but we compare as string)
+    const storedOtp = String(verifyDocs.emailOtp).trim();
+    const receivedOtp = String(otp).trim();
+
+    // Debug logging
+    console.log("🔍 OTP Verification Debug:");
+    console.log("   Email:", email);
+    console.log("   Received OTP:", receivedOtp, "(type:", typeof receivedOtp + ")");
+    console.log("   Stored OTP:", storedOtp, "(type:", typeof storedOtp + ")");
+    console.log("   OTP Match:", storedOtp === receivedOtp);
+    console.log("   OTP Expires At:", new Date(verifyDocs.emailOtpExpiresAt));
+    console.log("   Current Time:", new Date());
+    console.log("   Is Expired:", new Date(verifyDocs.emailOtpExpiresAt).getTime() < Date.now());
+
+    // Check if OTP is expired
+    const isExpired = new Date(verifyDocs.emailOtpExpiresAt).getTime() < Date.now();
+    
+    if (isExpired) {
+      return next(new AppError("OTP has expired. Please request a new OTP", 400));
+    }
+    
+    // Check if OTP matches (both converted to string)
+    if (storedOtp !== receivedOtp) {
+      // In development, show helpful message
+      if (process.env.NODE_ENV === "development") {
+        return next(new AppError(
+          `OTP mismatch. You entered: ${otp}, but the current OTP is: ${verifyDocs.emailOtp}. Please use the latest OTP from your email.`,
+          400
+        ));
+      }
+      return next(new AppError("Invalid OTP. Please use the latest OTP sent to your email", 400));
     }
 
     // delete document
