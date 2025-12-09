@@ -28,8 +28,13 @@ export const sendEmailVerificationOtp = async (req, res, next) => {
       // emailOtp: verifyDocs?.emailOtp ? verifyDocs?.emailOtp : "",
     });
   } catch (error) {
+    console.error("❌ Email sending error:", error);
+    // Show actual error in development, generic in production
+    const errorMessage = process.env.NODE_ENV === "development" 
+      ? error.message || "There was an error sending the email. Try again later"
+      : "There was an error sending the email. Try again later";
     return next(
-      new AppError("There was an error sending the email. Try again later", 500)
+      new AppError(errorMessage, 500)
     );
   }
 };
