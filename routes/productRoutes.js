@@ -6,7 +6,7 @@ import {
   resizeProductImages,
 } from "../middleware/seller/uploadMiddleware.js";
 import * as productController from "../controllers/sellers/productController.js";
-import { protect } from "../controllers/authController.js"; // JWT protect middleware
+import { protect, optionalProtect } from "../controllers/authController.js"; // JWT protect middleware
 import { restrictToSeller } from "../middleware/seller/restrictToSeller.js";
 import { Product } from "./../models/seller/product.js";
 import { getFeatureProducts } from "./../controllers/common/featureProducts.js";
@@ -33,7 +33,7 @@ router
 
 router
   .route("/details-with-performance")
-  .get(productController.getAllProductWithPerformance);
+  .get(optionalProtect, productController.getAllProductWithPerformance);
 
 router
   .route("/:id")
@@ -81,7 +81,7 @@ router
   .route("/details-with-performance/:id")
   .get(productController.getProductWithPerformance);
 
-// feature products
-router.route("/feature/list").get(getFeatureProducts);
+// feature products (optional auth - to detect seller)
+router.route("/feature/list").get(optionalProtect, getFeatureProducts);
 
 export default router;

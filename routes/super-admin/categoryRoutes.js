@@ -2,7 +2,7 @@ import express from "express";
 const router = express.Router();
 
 import * as categoryController from "../../controllers/super-admin/categoryController.js";
-import { protect } from "../../controllers/authController.js";
+import { protect, optionalProtect } from "../../controllers/authController.js";
 import { restrictToAdmin } from "../../middleware/super-admin/restrictToAdmin.js";
 
 router.post(

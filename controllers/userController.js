@@ -81,6 +81,7 @@ export const startUpdateVerification = catchAsync(async (req, res, next) => {
   const {
     firstName,
     lastName,
+    businessName, // For sellers
     email,
     phoneNumber,
     bio,
@@ -96,6 +97,9 @@ export const startUpdateVerification = catchAsync(async (req, res, next) => {
   const userId = req.user._id;
   const user = await User.findById(userId);
   if (!user) return next(new AppError("User not found", 404));
+
+  // Determine if user is a seller
+  const isSeller = user.role === "seller";
 
   // 🔹 Profile Picture processing
   let profilePictureKey = user.profilePicture || null;
@@ -122,138 +126,148 @@ export const startUpdateVerification = catchAsync(async (req, res, next) => {
   const isEmailNew = email && email !== user.email;
   const isPhoneNew = phoneNumber && phoneNumber !== user.phoneNumber;
 
-  // যদি শুধু name/bio/preferences update হয় — OTP generate না করে direct update
-  if (!isEmailNew && !isPhoneNew) {
-    const updatedUser = await User.findByIdAndUpdate(
-      userId,
-      {
-        firstName,
-        lastName,
-        bio,
-        emailNotifications,
-        pushNotifications,
-        marketingEmails,
-        notificationFrequency,
-        language,
-        currency,
-        defaultAddress,
-        profilePicture: profilePictureKey,
-      },
-      { new: true }
-    );
-
-    // presigned URL
-    if (updatedUser.profilePicture) {
-      updatedUser.profilePicture = await getPresignedUrl(
-        updatedUser.profilePicture
-      );
-    }
-
-    return res.status(200).json({
-      status: "success",
-      message: "Profile updated successfully",
-      data: updatedUser,
-    });
-  }
-
-  // OTP generate only if email or phone is new
-  const emailOtp = isEmailNew
-    ? crypto.randomInt(100000, 999999).toString()
-    : null;
-  const emailOtpExpiresAt = isEmailNew ? Date.now() + 5 * 60 * 1000 : null;
-
-  const phoneOtp = isPhoneNew
-    ? crypto.randomInt(100000, 999999).toString()
-    : null;
-  const phoneOtpExpiresAt = isPhoneNew ? Date.now() + 5 * 60 * 1000 : null;
-
-  const now = new Date();
-
-  // Build update payload
+  // Direct update without OTP - email/phone bhi direct update hoga, verify button par OTP send hoga
+  // Always do direct update, OTP will be sent only when user clicks verify button
+  
+  // Build update payload based on user role
   const updatePayload = {
-    user: userId,
-    pendingData: {
-      firstName,
-      lastName,
-      email,
-      phoneNumber,
-      bio,
-      emailNotifications,
-      pushNotifications,
-      marketingEmails,
-      notificationFrequency,
-      language,
-      currency,
-      defaultAddress,
-      profilePicture: profilePictureKey,
-    },
-    ...(isEmailNew ? { emailOtp, emailOtpExpiresAt } : {}),
-    ...(isPhoneNew ? { phoneOtp, phoneOtpExpiresAt } : {}),
-    $setOnInsert: {
-      resendCount: 0,
-      firstSentAt: now,
-    },
-    lastSentAt: now,
-    step: isEmailNew
-      ? "emailPending"
-      : isPhoneNew
-      ? "phonePending"
-      : "completed",
+    email: email || user.email, // Update email directly
+    phoneNumber: phoneNumber || user.phoneNumber, // Update phone directly
+    bio,
+    emailNotifications,
+    pushNotifications,
+    marketingEmails,
+    notificationFrequency,
+    language,
+    currency,
+    defaultAddress,
+    profilePicture: profilePictureKey,
   };
 
-  const updatedVerification = await ProfileUpdateVerification.findOneAndUpdate(
-    { user: userId },
-    {
-      $set: {
-        pendingData: updatePayload.pendingData,
-        ...(isEmailNew ? { emailOtp: updatePayload.emailOtp } : {}),
-        ...(isEmailNew
-          ? { emailOtpExpiresAt: updatePayload.emailOtpExpiresAt }
-          : {}),
-        ...(isPhoneNew ? { phoneOtp: updatePayload.phoneOtp } : {}),
-        ...(isPhoneNew
-          ? { phoneOtpExpiresAt: updatePayload.phoneOtpExpiresAt }
-          : {}),
-        step: updatePayload.step,
-        lastSentAt: updatePayload.lastSentAt,
-      },
-      $setOnInsert: {
-        resendCount: 0,
-        firstSentAt: now,
-      },
-    },
-    { new: true, upsert: true, setDefaultsOnInsert: true }
-  );
+  // Update user document directly (better for nested objects)
+  // Update basic fields first
+  if (email) user.email = email;
+  if (phoneNumber) user.phoneNumber = phoneNumber;
+  if (bio !== undefined) user.bio = bio;
+  if (emailNotifications !== undefined) user.emailNotifications = emailNotifications;
+  if (pushNotifications !== undefined) user.pushNotifications = pushNotifications;
+  if (marketingEmails !== undefined) user.marketingEmails = marketingEmails;
+  if (notificationFrequency) user.notificationFrequency = notificationFrequency;
+  if (language) user.language = language;
+  if (currency) user.currency = currency;
+  if (defaultAddress) user.defaultAddress = defaultAddress;
+  if (profilePictureKey) user.profilePicture = profilePictureKey;
 
-  // Send OTPs if email or phone changed
-  if (isEmailNew) {
-    await new Email(
-      { email, emailOtp: updatedVerification.emailOtp },
-      null,
-      process.env.FRONTEND_URL
-    ).sendEmailVerificationOtpFn();
-  }
-
-  if (!isEmailNew && isPhoneNew) {
-    try {
-      await sendPhoneNumberVerificationOtpDirect(
-        phoneNumber,
-        updatedVerification.phoneOtp
-      );
-    } catch (error) {
-      return next(new AppError(error.message, 500));
+  // Add role-specific fields
+  if (isSeller) {
+    // For sellers: update businessName in both businessDetails and sellerProfile
+    if (businessName !== undefined && businessName !== null && businessName !== "") {
+      const trimmedBusinessName = businessName.trim();
+      
+      // Update businessDetails
+      if (!user.businessDetails) {
+        user.businessDetails = { businessName: trimmedBusinessName };
+      } else {
+        user.businessDetails.businessName = trimmedBusinessName;
+      }
+      
+      // Update sellerProfile
+      if (!user.sellerProfile) {
+        user.sellerProfile = { shopName: trimmedBusinessName };
+      } else {
+        user.sellerProfile.shopName = trimmedBusinessName;
+      }
+      
+      console.log("🔄 Updating seller business name:", {
+        businessName: trimmedBusinessName,
+        hasBusinessDetails: !!user.businessDetails,
+        hasSellerProfile: !!user.sellerProfile,
+        currentBusinessName: user.businessDetails?.businessName,
+        currentShopName: user.sellerProfile?.shopName,
+      });
+    } else {
+      console.log("⚠️ Business name is empty/undefined/null, skipping update. Value:", businessName);
     }
+  } else if (!isSeller) {
+    // For normal users: update firstName and lastName
+    if (firstName !== undefined && firstName !== null) user.firstName = firstName.trim();
+    if (lastName !== undefined && lastName !== null) user.lastName = lastName.trim();
+    console.log("🔄 Updating user name:", { firstName, lastName });
   }
 
-  res.status(200).json({
-    status: "success",
-    message: "Verification OTP sent successfully",
-    verificationId: updatedVerification._id,
-    step: updatedVerification.step,
-    profilePicture: profilePictureKey
-      ? await getPresignedUrl(profilePictureKey)
-      : null,
+  console.log("📥 Request body businessName:", businessName);
+  console.log("📥 User role:", user.role, "isSeller:", isSeller);
+  console.log("📥 Current user before save:", {
+    businessName: user.businessDetails?.businessName,
+    shopName: user.sellerProfile?.shopName,
   });
+
+  // Save the user document
+  await user.save();
+
+  console.log("✅ User saved successfully");
+
+  // Re-fetch the user to ensure we have the latest data with all fields
+  const freshUser = await User.findById(userId).lean();
+  if (!freshUser) {
+    return next(new AppError("Failed to fetch updated user", 500));
+  }
+
+  // Use lean() result directly (already a plain object)
+  const updatedUserObj = freshUser;
+  
+  console.log("✅ Updated user object (after re-fetch):", {
+    businessName: updatedUserObj.businessDetails?.businessName,
+    shopName: updatedUserObj.sellerProfile?.shopName,
+    firstName: updatedUserObj.firstName,
+    lastName: updatedUserObj.lastName,
+    hasBusinessDetails: !!updatedUserObj.businessDetails,
+    hasSellerProfile: !!updatedUserObj.sellerProfile,
+    businessDetailsKeys: updatedUserObj.businessDetails ? Object.keys(updatedUserObj.businessDetails) : [],
+    sellerProfileKeys: updatedUserObj.sellerProfile ? Object.keys(updatedUserObj.sellerProfile) : [],
+  });
+  
+  // presigned URL
+  if (updatedUserObj.profilePicture) {
+    updatedUserObj.profilePicture = await getPresignedUrl(
+      `profilePicture/${updatedUserObj.profilePicture}`
+    );
+  }
+
+  // Apply presigned URL to sellerProfile.shopPicture if exists
+  if (updatedUserObj.sellerProfile && updatedUserObj.sellerProfile.shopPicture) {
+    updatedUserObj.sellerProfile.shopPicture = await getPresignedUrl(
+      `shopPicture/${updatedUserObj.sellerProfile.shopPicture}`
+    );
+  }
+
+  console.log("📤 Sending response with data:", {
+    businessName: updatedUserObj.businessDetails?.businessName,
+    shopName: updatedUserObj.sellerProfile?.shopName,
+    dataKeys: Object.keys(updatedUserObj),
+    dataSize: JSON.stringify(updatedUserObj).length,
+  });
+
+  // Ensure data object is not empty
+  if (!updatedUserObj || Object.keys(updatedUserObj).length === 0) {
+    console.error("❌ ERROR: updatedUserObj is empty!");
+    return next(new AppError("Failed to get updated user data", 500));
+  }
+
+  const response = {
+    status: "success",
+    message: "Profile updated successfully",
+    data: updatedUserObj,
+  };
+
+  console.log("📤 Final response structure:", {
+    hasStatus: !!response.status,
+    hasMessage: !!response.message,
+    hasData: !!response.data,
+    dataKeys: response.data ? Object.keys(response.data) : [],
+  });
+
+  return res.status(200).json(response);
 });
 // export const startUpdateVerification = async (req, res, next) => {
 //   try {
@@ -565,14 +579,34 @@ export const verifyEmailOtp = async (req, res, next) => {
     } else {
       verification.step = "completed";
 
-      // Final update to user
-      const { firstName, lastName, email, bio } = verification.pendingData;
-      await User.findByIdAndUpdate(verification.user, {
-        firstName,
-        lastName,
-        email,
-        bio,
-      });
+      // Final update to user (user is already fetched above)
+      const isSeller = user.role === "seller";
+      
+      const updatePayload = {
+        email: verification.pendingData.email,
+        bio: verification.pendingData.bio,
+      };
+
+      // Add role-specific fields
+      if (isSeller && verification.pendingData.businessName) {
+        // Ensure nested objects exist
+        if (!user.businessDetails) {
+          updatePayload.businessDetails = { businessName: verification.pendingData.businessName };
+        } else {
+          updatePayload["businessDetails.businessName"] = verification.pendingData.businessName;
+        }
+        
+        if (!user.sellerProfile) {
+          updatePayload.sellerProfile = { shopName: verification.pendingData.businessName };
+        } else {
+          updatePayload["sellerProfile.shopName"] = verification.pendingData.businessName;
+        }
+      } else if (!isSeller) {
+        updatePayload.firstName = verification.pendingData.firstName;
+        updatePayload.lastName = verification.pendingData.lastName;
+      }
+
+      await User.findByIdAndUpdate(verification.user, { $set: updatePayload });
 
       // Delete verification document after final update
       await ProfileUpdateVerification.findByIdAndDelete(verification._id);
@@ -608,16 +642,35 @@ export const verifyPhoneOtp = async (req, res, next) => {
     }
 
     // Final update to user
-    const { firstName, lastName, email, phoneNumber, bio } =
-      verification.pendingData;
+    const user = await User.findById(verification.user);
+    const isSeller = user.role === "seller";
+    
+    const updatePayload = {
+      email: verification.pendingData.email,
+      phoneNumber: verification.pendingData.phoneNumber,
+      bio: verification.pendingData.bio,
+    };
 
-    await User.findByIdAndUpdate(verification.user, {
-      firstName,
-      lastName,
-      email,
-      phoneNumber,
-      bio,
-    });
+    // Add role-specific fields
+    if (isSeller && verification.pendingData.businessName) {
+      // Ensure nested objects exist
+      if (!user.businessDetails) {
+        updatePayload.businessDetails = { businessName: verification.pendingData.businessName };
+      } else {
+        updatePayload["businessDetails.businessName"] = verification.pendingData.businessName;
+      }
+      
+      if (!user.sellerProfile) {
+        updatePayload.sellerProfile = { shopName: verification.pendingData.businessName };
+      } else {
+        updatePayload["sellerProfile.shopName"] = verification.pendingData.businessName;
+      }
+    } else if (!isSeller) {
+      updatePayload.firstName = verification.pendingData.firstName;
+      updatePayload.lastName = verification.pendingData.lastName;
+    }
+
+    await User.findByIdAndUpdate(verification.user, { $set: updatePayload });
 
     verification.step = "completed";
     await verification.save(); // Save step before delete

@@ -27,17 +27,34 @@ export const createProduct = catchAsync(async (req, res, next) => {
   try {
     req.body.createdBy = req.user._id;
 
+    // Debug: Log files received
+    console.log('📸 Files received:', {
+      filesCount: req.files?.length || 0,
+      files: req.files?.map(f => ({ fieldname: f.fieldname, originalname: f.originalname, mimetype: f.mimetype, size: f.size })) || [],
+      bodyKeys: Object.keys(req.body),
+    });
+
     // 🔹 S3 upload for productImages
     if (req.files && req.files.length > 0) {
       req.body.productImages = [];
       await Promise.all(
         req.files.map(async (file, i) => {
-          // ✅ Database-এ শুধু filename store
-          const key = `${req.user._id}-${Date.now()}-${i}.jpeg`;
-          await uploadToS3(file.buffer, `products/${key}`, "image/jpeg");
-          req.body.productImages.push(key); // ✅ DB-এ শুধু key
+          try {
+            // ✅ Database-এ শুধু filename store
+            const key = `${req.user._id}-${Date.now()}-${i}.jpeg`;
+            console.log(`📤 Uploading image ${i + 1}/${req.files.length}: ${key}`);
+            await uploadToS3(file.buffer, `products/${key}`, "image/jpeg");
+            req.body.productImages.push(key); // ✅ DB-এ শুধু key
+            console.log(`✅ Image uploaded successfully: ${key}`);
+          } catch (error) {
+            console.error(`❌ Error uploading image ${i + 1}:`, error);
+            throw error;
+          }
         })
       );
+      console.log(`✅ Total ${req.body.productImages.length} images uploaded and saved to productImages array`);
+    } else {
+      console.warn('⚠️ No files received in req.files. Files might not be uploaded properly.');
     }
 
     // 🔹 Product create (slug auto-generate model pre-save hook এ)
@@ -530,12 +547,24 @@ export const getProductWithPerformance = catchAsync(async (req, res, next) => {
 
 export const getAllProductWithPerformance = catchAsync(
   async (req, res, next) => {
-    let query = Product.find(); // Public access
-
-    // 🔍 search support
-    if (req.query.search) {
-      query = query.find({ $text: { $search: req.query.search } });
+    // 🔹 Build base query object first (plain JavaScript object)
+    let baseQuery = {}; // Base query object
+    
+    if (req.user && req.user.role === "seller" && req.query.sellerOnly === "true") {
+      baseQuery.createdBy = req.user._id;
+      console.log("🔍 Filtering products for seller:", req.user._id);
     }
+
+    // 🔍 search support - build query object
+    if (req.query.search) {
+      baseQuery.$text = { $search: req.query.search };
+    }
+
+    // 🔹 Get total count BEFORE creating the query chain
+    const total = await Product.countDocuments(baseQuery);
+    
+    // 🔹 Now create a fresh query for fetching products
+    let query = Product.find(baseQuery);
 
     const features = new APIFeatures(query, req.query).paginate();
 
@@ -630,6 +659,7 @@ export const getAllProductWithPerformance = catchAsync(
     res.status(200).json({
       status: "success",
       results: products.length,
+      total: total, // Total count of all products matching the query
       page: req.query.page * 1 || 1,
       limit: req.query.limit * 1 || 100,
       products: productsWithPerformance,

@@ -91,6 +91,8 @@ export const signup = catchAsync(async (req, res, next) => {
     const reqBody = {
       ...req.body,
       profilePicture: profilePicturePath,
+      // Skip verification - set account as verified by default
+      isAccountVerified: true,
     };
 
     // যদি seller & business account হয়
@@ -101,7 +103,6 @@ export const signup = catchAsync(async (req, res, next) => {
         shopId,
         shopPicture: shopPicturePath,
       };
-      reqBody.isAccountVerified = true;
     }
 
     // 4️⃣ Create the User
@@ -190,6 +191,48 @@ export const protect = catchAsync(async (req, res, next) => {
   }
   req.user = freshUser;
   res.locals.user = freshUser;
+  return next();
+});
+
+// Optional protect - doesn't throw error if no token, but sets req.user if token is valid
+export const optionalProtect = catchAsync(async (req, res, next) => {
+  let token;
+  if (
+    req.headers.authorization &&
+    req.headers.authorization.startsWith("Bearer")
+  ) {
+    token = req.headers.authorization.split(" ")[1];
+  }
+
+  if (!token) {
+    // No token - allow request to proceed without req.user
+    return next();
+  }
+
+  try {
+    //2) Verification token
+    const decoded = await promisify(jwt.verify)(token, process.env.JWT_SECRET);
+
+    //3) Check if user still exists
+    const freshUser = await User.findById(decoded.id);
+    if (!freshUser) {
+      // User doesn't exist - allow request to proceed without req.user
+      return next();
+    }
+    
+    //Check if user changed password after the token was issued
+    if (freshUser.changedPasswordAfter(decoded.iat)) {
+      // Token invalid - allow request to proceed without req.user
+      return next();
+    }
+    
+    req.user = freshUser;
+    res.locals.user = freshUser;
+  } catch (err) {
+    // Token invalid - allow request to proceed without req.user
+    // Don't throw error, just continue
+  }
+  
   return next();
 });
 

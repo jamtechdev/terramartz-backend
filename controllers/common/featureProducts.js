@@ -8,6 +8,21 @@ import { User } from "../../models/users.js";
 import { getPresignedUrl } from "../../utils/awsS3.js";
 
 export const getFeatureProducts = catchAsync(async (req, res, next) => {
+  // 🔹 Filter by seller if seller is logged in and sellerOnly=true
+  let sellerFilter = {};
+  if (req.user && req.user.role === "seller" && req.query.sellerOnly === "true") {
+    sellerFilter.createdBy = req.user._id;
+    console.log("🔍 Filtering featured products for seller:", req.user._id);
+  }
+  
+  // Helper to build match condition with seller filter
+  const buildMatchCondition = (baseMatch) => {
+    if (sellerFilter.createdBy) {
+      return { ...baseMatch, "details.createdBy": sellerFilter.createdBy };
+    }
+    return baseMatch;
+  };
+  
   const usedProductIds = [];
 
   const mapProductWithCategory = async (
@@ -86,7 +101,7 @@ export const getFeatureProducts = catchAsync(async (req, res, next) => {
       },
     },
     { $unwind: "$details" },
-    { $match: { "details.status": "active" } },
+    { $match: buildMatchCondition({ "details.status": "active" }) },
     { $sort: { totalSales: -1, views: -1, "details.createdAt": -1 } },
     { $limit: 1 },
     { $replaceRoot: { newRoot: { $mergeObjects: ["$details", "$$ROOT"] } } },
@@ -115,7 +130,7 @@ export const getFeatureProducts = catchAsync(async (req, res, next) => {
       },
     },
     { $unwind: "$details" },
-    { $match: { "details.status": "active", _id: { $nin: usedProductIds } } },
+    { $match: buildMatchCondition({ "details.status": "active", _id: { $nin: usedProductIds } }) },
     { $sort: { rating: -1, totalQuantitySold: -1, "details.createdAt": -1 } },
     { $limit: 1 },
     { $replaceRoot: { newRoot: { $mergeObjects: ["$details", "$$ROOT"] } } },
@@ -141,7 +156,10 @@ export const getFeatureProducts = catchAsync(async (req, res, next) => {
     { sort: { createdAt: -1 } }
   );
   if (latestAdmin) {
-    const product = await Product.findById(latestAdmin.productId).lean();
+    const productQuery = sellerFilter.createdBy 
+      ? { _id: latestAdmin.productId, createdBy: sellerFilter.createdBy, status: "active" }
+      : { _id: latestAdmin.productId, status: "active" };
+    const product = await Product.findOne(productQuery).lean();
     const performance = await ProductPerformance.findOne({
       product: latestAdmin.productId,
     });
@@ -174,7 +192,7 @@ export const getFeatureProducts = catchAsync(async (req, res, next) => {
         },
       },
       { $unwind: "$details" },
-      { $match: { "details.status": "active", _id: { $nin: usedProductIds } } },
+      { $match: buildMatchCondition({ "details.status": "active", _id: { $nin: usedProductIds } }) },
       { $sort: { totalSales: -1, views: -1, "details.createdAt": -1 } },
       { $limit: 1 },
       { $replaceRoot: { newRoot: { $mergeObjects: ["$details", "$$ROOT"] } } },
@@ -204,7 +222,10 @@ export const getFeatureProducts = catchAsync(async (req, res, next) => {
       { sort: { createdAt: -1 } }
     );
     if (secondAdmin) {
-      const product = await Product.findById(secondAdmin.productId).lean();
+      const productQuery = sellerFilter.createdBy 
+        ? { _id: secondAdmin.productId, createdBy: sellerFilter.createdBy, status: "active" }
+        : { _id: secondAdmin.productId, status: "active" };
+      const product = await Product.findOne(productQuery).lean();
       const performance = await ProductPerformance.findOne({
         product: secondAdmin.productId,
       });
@@ -238,7 +259,7 @@ export const getFeatureProducts = catchAsync(async (req, res, next) => {
         },
       },
       { $unwind: "$details" },
-      { $match: { "details.status": "active", _id: { $nin: usedProductIds } } },
+      { $match: buildMatchCondition({ "details.status": "active", _id: { $nin: usedProductIds } }) },
       { $sort: { rating: -1, totalQuantitySold: -1, "details.createdAt": -1 } },
       { $limit: 1 },
       { $replaceRoot: { newRoot: { $mergeObjects: ["$details", "$$ROOT"] } } },

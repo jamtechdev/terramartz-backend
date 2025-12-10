@@ -216,6 +216,9 @@ export const updateCategory = catchAsync(async (req, res, next) => {
 
 // =================== 🔹 Get All Categories ===================
 export const getAllCategories = catchAsync(async (req, res, next) => {
+  // Check if user is logged in (from optionalProtect middleware or query param)
+  const isLoggedIn = req.user ? true : req.query.loggedIn === "true";
+  
   let query = Category.find().populate("createdBy", "name email");
   const features = new APIFeatures(query, req.query).paginate();
   const categories = await features.query;
@@ -225,16 +228,16 @@ export const getAllCategories = catchAsync(async (req, res, next) => {
     categories.map(async (category) => {
       const categoryCopy = category.toObject();
 
-      if (categoryCopy.image) {
-        categoryCopy.image = await getPresignedUrl(
-          `categories/${categoryCopy.image}`
-        );
-      }
-      if (categoryCopy.logo) {
-        categoryCopy.logo = await getPresignedUrl(
-          `categories/${categoryCopy.logo}`
-        );
-      }
+      // if (categoryCopy.image) {
+      //   categoryCopy.image = await getPresignedUrl(
+      //     `categories/${categoryCopy.image}`
+      //   );
+      // }
+      // if (categoryCopy.logo) {
+      //   categoryCopy.logo = await getPresignedUrl(
+      //     `categories/${categoryCopy.logo}`
+      //   );
+      // }
 
       return categoryCopy;
     })
@@ -242,6 +245,8 @@ export const getAllCategories = catchAsync(async (req, res, next) => {
 
   res.status(200).json({
     status: "success",
+    isLoggedIn: isLoggedIn, // Indicate if user is logged in
+    user: req.user ? { id: req.user._id, name: req.user.name, email: req.user.email } : null, // User info if logged in
     total: categoriesWithUrls.length,
     page: req.query.page * 1 || 1,
     limit: req.query.limit * 1 || 100,
@@ -260,16 +265,16 @@ export const getCategory = catchAsync(async (req, res, next) => {
   const categoryCopy = category.toObject();
 
   // 🔹 Generate presigned URLs for image and logo
-  if (categoryCopy.image) {
-    categoryCopy.image = await getPresignedUrl(
-      `categories/${categoryCopy.image}`
-    );
-  }
-  if (categoryCopy.logo) {
-    categoryCopy.logo = await getPresignedUrl(
-      `categories/${categoryCopy.logo}`
-    );
-  }
+  // if (categoryCopy.image) {
+  //   categoryCopy.image = await getPresignedUrl(
+  //     `categories/${categoryCopy.image}`
+  //   );
+  // }
+  // if (categoryCopy.logo) {
+  //   categoryCopy.logo = await getPresignedUrl(
+  //     `categories/${categoryCopy.logo}`
+  //   );
+  // }
 
   res.status(200).json({
     status: "success",
@@ -328,6 +333,12 @@ export const getCategoryWithProductsAdvanced = catchAsync(
 
     // 2️⃣ Build match object for aggregation
     let matchObj = { category: category._id, status: "active" };
+
+    // 🔹 Filter by seller if seller is logged in and sellerOnly=true
+    if (req.user && req.user.role === "seller" && req.query.sellerOnly === "true") {
+      matchObj.createdBy = req.user._id;
+      console.log("🔍 Filtering products for seller:", req.user._id);
+    }
 
     // Search by title (minimum 2 letters)
     if (req.query.search && req.query.search.length >= 2) {
@@ -399,6 +410,35 @@ export const getCategoryWithProductsAdvanced = catchAsync(
           },
         },
       },
+      {
+        // Ensure productImages field is included
+        $project: {
+          _id: 1,
+          title: 1,
+          slug: 1,
+          description: 1,
+          price: 1,
+          originalPrice: 1,
+          category: 1,
+          stockQuantity: 1,
+          productImages: 1,
+          tags: 1,
+          organic: 1,
+          featured: 1,
+          productType: 1,
+          status: 1,
+          createdBy: 1,
+          farmId: 1,
+          farmName: 1,
+          discount: 1,
+          discountType: 1,
+          discountExpires: 1,
+          delivery: 1,
+          performance: 1,
+          seller: 1,
+          score: 1,
+        },
+      },
     ];
 
     // Sorting by weighted score
@@ -417,12 +457,28 @@ export const getCategoryWithProductsAdvanced = catchAsync(
       products.map(async (prod) => {
         const prodCopy = { ...prod };
 
-        if (prodCopy.productImages && prodCopy.productImages.length > 0) {
+        // Debug: Log productImages before conversion
+        if (!prodCopy.productImages || prodCopy.productImages.length === 0) {
+          console.log(`⚠️ Product ${prodCopy._id} (${prodCopy.title}) has no productImages. Raw productImages:`, prodCopy.productImages);
+        }
+
+        if (prodCopy.productImages && Array.isArray(prodCopy.productImages) && prodCopy.productImages.length > 0) {
           prodCopy.productImages = await Promise.all(
             prodCopy.productImages.map(async (imgKey) => {
-              return await getPresignedUrl(`products/${imgKey}`);
+              try {
+                const url = await getPresignedUrl(`products/${imgKey}`);
+                return url;
+              } catch (error) {
+                console.error(`Error generating presigned URL for ${imgKey}:`, error);
+                return null;
+              }
             })
           );
+          // Filter out any null values
+          prodCopy.productImages = prodCopy.productImages.filter(url => url !== null);
+        } else {
+          // Ensure productImages is always an array
+          prodCopy.productImages = [];
         }
 
         return prodCopy;

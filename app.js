@@ -74,6 +74,7 @@ app.use(cors());
 // =====================
 app.use("/api/users", userRouter);
 app.use("/api/category", categoryRouter);
+app.use("/api/categories", categoryRouter); // Alias for backward compatibility
 app.use("/api/products", productRouter);
 app.use("/api/cart", cartRouter);
 app.use("/api/purchase", purchaseRouter);
