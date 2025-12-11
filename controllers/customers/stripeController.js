@@ -597,17 +597,59 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
 
   console.log(`Creating Stripe Checkout Session with ${lineItems.length} line items`);
 
-  // 💡 Step 7: Create Stripe Checkout Session
-  const session = await stripe.checkout.sessions.create({
+  // 💡 Step 7: Find or create Stripe customer by email
+  const customerEmail = shippingAddress?.email || req.user.email;
+  let stripeCustomerId = null;
+  
+  if (customerEmail) {
+    try {
+      // Search for existing customer by email
+      const existingCustomers = await stripe.customers.list({
+        email: customerEmail,
+        limit: 1,
+      });
+      
+      if (existingCustomers.data.length > 0) {
+        // Use existing customer
+        stripeCustomerId = existingCustomers.data[0].id;
+        console.log(`✅ Found existing Stripe customer: ${stripeCustomerId} for email: ${customerEmail}`);
+      } else {
+        // Create new customer
+        const newCustomer = await stripe.customers.create({
+          email: customerEmail,
+          name: req.user.name || shippingAddress?.name,
+          metadata: {
+            userId: String(req.user._id || req.user.id),
+          },
+        });
+        stripeCustomerId = newCustomer.id;
+        console.log(`✅ Created new Stripe customer: ${stripeCustomerId} for email: ${customerEmail}`);
+      }
+    } catch (error) {
+      console.error('❌ Error finding/creating Stripe customer:', error);
+      // Continue without customer_id if there's an error
+    }
+  }
+
+  // 💡 Step 8: Create Stripe Checkout Session
+  const sessionConfig = {
     payment_method_types: ["card"],
     line_items: lineItems,
     mode: "payment",
     success_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/order-success?session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/order-cancel`,
-    customer_email: shippingAddress?.email || req.user.email,
     metadata: metadata,
     // Removed shipping_address_collection - shipping address is already collected before Stripe
-  });
+  };
+  
+  // Add customer_id if we have one, otherwise use customer_email
+  if (stripeCustomerId) {
+    sessionConfig.customer = stripeCustomerId;
+  } else {
+    sessionConfig.customer_email = customerEmail;
+  }
+  
+  const session = await stripe.checkout.sessions.create(sessionConfig);
 
   res.status(200).json({
     status: "success",

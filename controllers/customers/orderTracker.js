@@ -25,7 +25,7 @@ import { getPresignedUrl } from "../../utils/awsS3.js";
 // http://localhost:7345/api/terramartz/customer/order-tracker?search=Strawberries
 
 export const getCustomerOrders = catchAsync(async (req, res, next) => {
-  const customerId = req.user._id;
+  const customerId = req.user._id || req.user.id;
 
   if (!customerId) {
     return next(new AppError("Invalid customer ID!", 400));
@@ -34,8 +34,21 @@ export const getCustomerOrders = catchAsync(async (req, res, next) => {
   const { status = "all", search = "", page = 1, limit = 10 } = req.query;
   const skip = (page - 1) * limit;
 
+  // Purchase model stores buyer as String, so convert all to strings for matching
+  const customerIdString = String(customerId);
+  const customerIdAlt1 = req.user._id ? String(req.user._id) : null;
+  const customerIdAlt2 = req.user.id ? String(req.user.id) : null;
+
   const pipeline = [
-    { $match: { buyer: customerId } },
+    { 
+      $match: { 
+        $or: [
+          { buyer: customerIdString },
+          ...(customerIdAlt1 ? [{ buyer: customerIdAlt1 }] : []),
+          ...(customerIdAlt2 ? [{ buyer: customerIdAlt2 }] : []),
+        ].filter(Boolean)
+      } 
+    },
 
     {
       $lookup: {

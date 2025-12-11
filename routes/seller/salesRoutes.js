@@ -4,7 +4,7 @@ import * as sellerOrderController from "../../controllers/sellers/sellerOrderCon
 import * as shopSettingsController from "../../controllers/sellers/shopSettingsController.js";
 import { upload } from "../../utils/multerConfig.js";
 import { restrictToSeller } from "../../middleware/seller/restrictToSeller.js";
-import { protect } from "../../controllers/authController.js"; // JWT protect middleware
+import { protect, optionalProtect } from "../../controllers/authController.js"; // JWT protect middleware
 import { getBestSellers } from "./../../controllers/sellers/salesAnalyticsController.js";
 const router = express.Router();
 // GET seller orders list (with pagination)
@@ -62,6 +62,7 @@ router.patch(
   ]),
   shopSettingsController.updateShopSettings
 );
-router.route("/products/best-sellers").get(getBestSellers);
+// Best sellers - public route (optional auth for seller filtering)
+router.route("/products/best-sellers").get(optionalProtect, getBestSellers);
 
 export default router;

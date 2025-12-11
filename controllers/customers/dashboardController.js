@@ -91,11 +91,20 @@ export const getRecentActivity = catchAsync(async (req, res, next) => {
 
 // 🔹 Active Orders
 export const getActiveOrders = catchAsync(async (req, res, next) => {
-  const userId = req.user._id;
+  const userId = req.user._id || req.user.id;
+
+  // Purchase model stores buyer as String, so convert all to strings for matching
+  const userIdString = String(userId);
+  const userIdAlt1 = req.user._id ? String(req.user._id) : null;
+  const userIdAlt2 = req.user.id ? String(req.user.id) : null;
 
   // 🔹 Fetch active orders for this customer
   const activeOrders = await Purchase.find({
-    buyer: userId,
+    $or: [
+      { buyer: userIdString },
+      ...(userIdAlt1 ? [{ buyer: userIdAlt1 }] : []),
+      ...(userIdAlt2 ? [{ buyer: userIdAlt2 }] : []),
+    ].filter(Boolean),
     status: { $in: ["new", "processing", "shipped"] }, // exclude delivered/cancelled
   })
     .sort({ createdAt: -1 })

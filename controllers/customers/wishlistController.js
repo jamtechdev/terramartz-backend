@@ -83,11 +83,17 @@ export const getWishlist = catchAsync(async (req, res, next) => {
 
   // 🔹 Presigned URLs apply for each product image & category image
   const productsWithPresignedImages = await Promise.all(
-    wishlistItems.map(async (item) => {
-      const product = item.product.toObject(); // Mongoose doc → plain object
+    wishlistItems
+      .filter((item) => item.product !== null && item.product !== undefined) // Filter out null products
+      .map(async (item) => {
+        // Safety check: skip if product is null
+        if (!item.product) {
+          return null;
+        }
+        const product = item.product.toObject(); // Mongoose doc → plain object
 
-      // Product images
-      if (product?.productImages?.length) {
+        // Product images
+        if (product?.productImages?.length) {
         const presignedImages = await Promise.all(
           product.productImages.map(async (imgKey) => {
             const url = await getPresignedUrl(`products/${imgKey}`);
@@ -109,9 +115,12 @@ export const getWishlist = catchAsync(async (req, res, next) => {
     })
   );
 
+  // Filter out any null products (from deleted products)
+  const validProducts = productsWithPresignedImages.filter((p) => p !== null);
+
   res.status(200).json({
     status: "success",
-    wishlist: productsWithPresignedImages,
+    wishlist: validProducts,
   });
 });
 
