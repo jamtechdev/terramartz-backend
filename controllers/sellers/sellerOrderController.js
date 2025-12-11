@@ -5,9 +5,18 @@ import AppError from "../../utils/apperror.js";
 // https://terramartz-backend-v2.onrender.com/api/seller/orders?page=1&limit=10&sort=recent
 // https://terramartz-backend-v2.onrender.com/api/seller/orders?page=1&limit=10&sort=oldest
 export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
-  const sellerId = req.user.id;
+  // Use _id instead of id to ensure ObjectId format matching
+  const sellerId = req.user._id || req.user.id;
+  
+  if (!sellerId) {
+    return next(new AppError("Seller not authenticated", 401));
+  }
 
-  // if (!sellerId) return next(new AppError("Seller not authenticated", 401));
+  console.log("\n========== GET SELLER ORDERS ==========");
+  console.log("📦 Seller ID:", sellerId);
+  console.log("📦 Seller ID type:", typeof sellerId);
+  console.log("📦 Seller _id:", req.user._id);
+  console.log("📦 Seller id:", req.user.id);
 
   const page = parseInt(req.query.page, 10) || 1;
   const limit = parseInt(req.query.limit, 10) || 10;
@@ -18,9 +27,46 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
   // যদি ?sort=oldest থাকে → ascending
   // না থাকলে default → recent (-1)
 
+  // Import mongoose for ObjectId conversion (only once)
+  const mongoose = (await import("mongoose")).default;
+  
+  // Purchase model stores seller as String, but old orders might have ObjectId
+  // So we need to match both String and ObjectId formats
+  const sellerIdString = String(sellerId);
+  const sellerIdAlt1 = req.user._id ? String(req.user._id) : null;
+  const sellerIdAlt2 = req.user.id ? String(req.user.id) : null;
+  
+  // Also try ObjectId format for backward compatibility
+  let sellerObjectId = null;
+  try {
+    if (mongoose.Types.ObjectId.isValid(sellerId)) {
+      sellerObjectId = new mongoose.Types.ObjectId(sellerId);
+    }
+  } catch (err) {
+    // Ignore
+  }
+
+  console.log("📦 Seller IDs for matching (String + ObjectId):", {
+    sellerIdString,
+    sellerIdAlt1,
+    sellerIdAlt2,
+    sellerObjectId,
+    originalSellerId: sellerId,
+    originalType: typeof sellerId
+  });
+
   const ordersAggregation = [
     { $unwind: "$products" },
-    { $match: { "products.seller": sellerId } },
+    { 
+      $match: { 
+        $or: [
+          { "products.seller": sellerIdString },
+          ...(sellerIdAlt1 ? [{ "products.seller": sellerIdAlt1 }] : []),
+          ...(sellerIdAlt2 ? [{ "products.seller": sellerIdAlt2 }] : []),
+          ...(sellerObjectId ? [{ "products.seller": sellerObjectId }] : []),
+        ].filter(Boolean)
+      } 
+    },
 
     // ProductPerformance
     {
@@ -32,7 +78,7 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
       },
     },
 
-    // Product info
+    // Product info - Products use UUID strings, not ObjectId, so match directly
     {
       $lookup: {
         from: "products",
@@ -41,7 +87,19 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
         as: "products.productInfo",
       },
     },
-
+    // Extract productInfo from array
+    {
+      $addFields: {
+        "products.productInfo": {
+          $cond: {
+            if: { $gt: [{ $size: "$products.productInfo" }, 0] },
+            then: { $arrayElemAt: ["$products.productInfo", 0] },
+            else: null
+          }
+        }
+      }
+    },
+    
     // Product Seller info (hide password)
     {
       $lookup: {
@@ -50,6 +108,18 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
         foreignField: "_id",
         as: "products.productInfo.sellerInfo",
       },
+    },
+    // Extract sellerInfo from array
+    {
+      $addFields: {
+        "products.productInfo.sellerInfo": {
+          $cond: {
+            if: { $gt: [{ $size: "$products.productInfo.sellerInfo" }, 0] },
+            then: { $arrayElemAt: ["$products.productInfo.sellerInfo", 0] },
+            else: null
+          }
+        }
+      }
     },
 
     // Buyer info (hide password)
@@ -71,40 +141,44 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
         status: 1,
         createdAt: 1,
         updatedAt: 1,
+        totalAmount: 1, // Include totalAmount
         products: {
           product: 1,
           quantity: 1,
           price: 1,
           seller: 1,
           performance: 1,
+          // productInfo is now already extracted as an object
           productInfo: {
-            _id: 1,
-            title: 1,
-            description: 1,
-            price: 1,
-            originalPrice: 1,
-            stockQuantity: 1,
-            productImages: 1,
-            tags: 1,
-            organic: 1,
-            featured: 1,
-            productType: 1,
-            status: 1,
-            createdAt: 1,
-            updatedAt: 1,
+            _id: "$products.productInfo._id",
+            title: "$products.productInfo.title",
+            name: "$products.productInfo.name",
+            description: "$products.productInfo.description",
+            price: "$products.productInfo.price",
+            originalPrice: "$products.productInfo.originalPrice",
+            stockQuantity: "$products.productInfo.stockQuantity",
+            productImages: "$products.productInfo.productImages",
+            tags: "$products.productInfo.tags",
+            organic: "$products.productInfo.organic",
+            featured: "$products.productInfo.featured",
+            productType: "$products.productInfo.productType",
+            status: "$products.productInfo.status",
+            createdAt: "$products.productInfo.createdAt",
+            updatedAt: "$products.productInfo.updatedAt",
+            createdBy: "$products.productInfo.createdBy",
             sellerInfo: {
-              _id: 1,
-              firstName: 1,
-              lastName: 1,
-              email: 1,
-              phoneNumber: 1,
-              role: 1,
-              accountType: 1,
-              sellerProfile: 1,
-              status: 1,
-              isAccountVerified: 1,
-              createdAt: 1,
-              updatedAt: 1,
+              _id: "$products.productInfo.sellerInfo._id",
+              firstName: "$products.productInfo.sellerInfo.firstName",
+              lastName: "$products.productInfo.sellerInfo.lastName",
+              email: "$products.productInfo.sellerInfo.email",
+              phoneNumber: "$products.productInfo.sellerInfo.phoneNumber",
+              role: "$products.productInfo.sellerInfo.role",
+              accountType: "$products.productInfo.sellerInfo.accountType",
+              sellerProfile: "$products.productInfo.sellerInfo.sellerProfile",
+              status: "$products.productInfo.sellerInfo.status",
+              isAccountVerified: "$products.productInfo.sellerInfo.isAccountVerified",
+              createdAt: "$products.productInfo.sellerInfo.createdAt",
+              updatedAt: "$products.productInfo.sellerInfo.updatedAt",
             },
           },
         },
@@ -136,6 +210,22 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
       },
     },
 
+    // Group back by order ID to get unique orders (since we unwound products)
+    {
+      $group: {
+        _id: "$_id",
+        orderId: { $first: "$orderId" },
+        shippingAddress: { $first: "$shippingAddress" },
+        paymentStatus: { $first: "$paymentStatus" },
+        status: { $first: "$status" },
+        createdAt: { $first: "$createdAt" },
+        updatedAt: { $first: "$updatedAt" },
+        buyer: { $first: "$buyer" },
+        totalAmount: { $first: "$totalAmount" }, // Include totalAmount
+        products: { $push: "$products" }, // Collect all products for this order
+      }
+    },
+    
     // ✅ শুধু এই লাইন পরিবর্তন (dynamic sort)
     { $sort: { createdAt: sortType } },
     { $skip: skip },
@@ -143,10 +233,65 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
   ];
 
   const orders = await Purchase.aggregate(ordersAggregation);
+  
+  console.log("📦 Aggregated orders count:", orders.length);
+  if (orders.length > 0) {
+    console.log("📦 Sample order structure:", JSON.stringify({
+      _id: orders[0]._id,
+      orderId: orders[0].orderId,
+      productsCount: orders[0].products?.length || 0,
+      firstProduct: orders[0].products?.[0] || null
+    }, null, 2));
+  }
 
+  // Count total orders with same matching logic (String + ObjectId for backward compatibility)
   const totalOrders = await Purchase.countDocuments({
-    "products.seller": sellerId,
+    $or: [
+      { "products.seller": sellerIdString },
+      ...(sellerIdAlt1 ? [{ "products.seller": sellerIdAlt1 }] : []),
+      ...(sellerIdAlt2 ? [{ "products.seller": sellerIdAlt2 }] : []),
+      ...(sellerObjectId ? [{ "products.seller": sellerObjectId }] : []),
+    ].filter(Boolean)
   });
+
+  console.log("📦 Found orders:", orders.length);
+  console.log("📦 Total orders:", totalOrders);
+  if (orders.length > 0) {
+    const firstOrder = orders[0];
+    console.log("📦 First order structure:", {
+      _id: firstOrder._id,
+      orderId: firstOrder.orderId,
+      productsIsArray: Array.isArray(firstOrder.products),
+      productsLength: Array.isArray(firstOrder.products) ? firstOrder.products.length : 'N/A',
+      firstProduct: firstOrder.products?.[0] ? {
+        product: firstOrder.products[0].product,
+        productInfo: firstOrder.products[0].productInfo ? {
+          _id: firstOrder.products[0].productInfo._id,
+          title: firstOrder.products[0].productInfo.title,
+          name: firstOrder.products[0].productInfo.name
+        } : null
+      } : null
+    });
+    console.log("📦 First order full products:", JSON.stringify(firstOrder.products || "No products", null, 2));
+  } else {
+    console.log("⚠️ No orders found! Checking why...");
+    console.log("📦 Seller ID used in query:", {
+      sellerIdString,
+      sellerIdAlt1,
+      sellerIdAlt2,
+      originalSellerId: sellerId,
+      originalType: typeof sellerId
+    });
+    
+    // Check if any orders exist with this seller
+    const testQuery = await Purchase.aggregate([
+      { $unwind: "$products" },
+      { $group: { _id: "$products.seller", count: { $sum: 1 } } },
+      { $limit: 10 }
+    ]);
+    console.log("📦 Sample seller IDs in database:", testQuery);
+  }
+  console.log("========================================\n");
 
   res.status(200).json({
     status: "success",
@@ -246,9 +391,53 @@ export const updateOrderStatus = catchAsync(async (req, res, next) => {
 
   await order.save();
 
+  // ✅ Send notification to buyer about status update
+  try {
+    const { Notification } = await import("../../models/common/notification.js");
+    const { User } = await import("../../models/users.js");
+    const { Product } = await import("../../models/seller/product.js");
+    
+    const buyerId = String(order.buyer);
+    const buyer = await User.findById(buyerId);
+    const productInfo = await Product.findById(productId);
+    
+    if (buyer) {
+      const statusMessages = {
+        processing: "Your order is now being processed",
+        shipped: "Your order has been shipped",
+        in_transit: "Your order is in transit",
+        delivered: "Your order has been delivered",
+        new: "Your order has been confirmed",
+      };
+
+      const statusMessage = statusMessages[status] || `Your order status has been updated to ${status}`;
+      
+      // Create notification in database
+      await Notification.create({
+        user: buyerId,
+        type: "order_status_updated",
+        title: "Order Status Updated",
+        message: `${statusMessage} for order ${order.orderId}. Product: ${productInfo?.title || productInfo?.name || "Product"}`,
+        orderId: order.orderId,
+        order: String(order._id),
+        productId: productId,
+        metadata: {
+          status: status,
+          productName: productInfo?.title || productInfo?.name || "Product",
+          trackingNumber: order.trackingNumber || null,
+        },
+      });
+      
+      console.log(`✅ Notification sent to buyer ${buyerId} for order ${order.orderId}`);
+    }
+  } catch (notifError) {
+    console.error("⚠️ Failed to send notification:", notifError);
+    // Don't fail the request if notification fails
+  }
+
   res.status(200).json({
     status: "success",
-    message: `Product status updated to "${status}" and order status auto-updated to "${order.status}"`,
+    message: `Product status updated to "${status}" and order status auto-updated to "${order.status}". Customer notification sent.`,
     data: order,
   });
 });

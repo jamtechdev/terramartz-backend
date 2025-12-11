@@ -9,7 +9,8 @@ router.use(protect); // সব route এ login required
 router
   .route("/")
   .get(cartController.getAllCartItems)
-  .post(cartController.addToCart);
+  .post(cartController.addToCart)
+  .delete(cartController.clearAllCartItems);
 
 router
   .route("/:id")

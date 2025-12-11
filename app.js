@@ -8,6 +8,7 @@ import fs from "fs";
 import morgan from "morgan";
 import path from "path";
 import cors from "cors";
+import cookieParser from "cookie-parser";
 import { fileURLToPath } from "url"; // <-- ES Module
 import AppError from "./utils/apperror.js";
 // import logger from "./utils/logger.js"; // logger import
@@ -26,6 +27,7 @@ import salesRoutes from "./routes/seller/salesRoutes.js";
 import faqRoutes from "./routes/common/faqRoutes.js";
 import newsletterRoutes from "./routes/customers/newsletterRoutes.js";
 import contactInquiryRoutes from "./routes/common/contactInquiryRoutes.js";
+import notificationRoutes from "./routes/common/notificationRoutes.js";
 import customersWishlistRoutes from "./routes/customers/wishlistRoutes.js";
 import customersDashboardRoutes from "./routes/customers/dashboardRoutes.js";
 import sellerStoreDetailRoutes from "./routes/seller/sellerStoreDetailRoutes.js";
@@ -65,9 +67,15 @@ app.set("views", path.join(__dirname, "views"));
 app.use(express.static(path.join(__dirname, "public")));
 
 // Middlewares
+app.use(cookieParser());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(cors());
+app.use(
+  cors({
+    origin: true, // reflect request origin
+    credentials: true,
+  })
+);
 
 // =====================
 // API Routes
@@ -81,6 +89,7 @@ app.use("/api/purchase", purchaseRouter);
 app.use("/api/reviews", reviewRouter);
 app.use("/api/newsletter", newsletterRoutes);
 app.use("/api/contact", contactInquiryRoutes);
+app.use("/api/notifications", notificationRoutes);
 
 app.use("/api/faqs", faqRoutes);
 app.use("/api/farms", farmsRouter);

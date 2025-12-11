@@ -4,8 +4,10 @@ import {
   getSellerStore,
   getSellerStoreProducts,
 } from "../../controllers/sellers/sellerStoreDetailController.js";
+import { optionalProtect } from "../../controllers/authController.js";
 
-router.get("/:sellerId/store", getSellerStore);
-router.get("/:sellerId/store/products", getSellerStoreProducts);
+// Public routes - store details and products are visible to everyone
+router.get("/:sellerId/store", optionalProtect, getSellerStore);
+router.get("/:sellerId/store/products", optionalProtect, getSellerStoreProducts);
 
 export default router;

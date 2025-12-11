@@ -8,4 +8,10 @@ router.use(protect);
 // create paymentIntent (custom form)
 router.post("/create-payment-intent", stripeController.createPaymentIntent);
 
+// create checkout session (Stripe hosted page)
+router.post("/create-checkout-session", stripeController.createCheckoutSession);
+
+// create order immediately after payment (called from frontend)
+router.post("/create-order-immediately", stripeController.createOrderImmediately);
+
 export default router;

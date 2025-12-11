@@ -50,20 +50,37 @@ export const getSellerStore = catchAsync(async (req, res, next) => {
     ? await getPresignedUrl(`profilePicture/${seller.profilePicture}`)
     : null;
 
+  // Calculate years in business
+  const memberSince = new Date(seller.createdAt);
+  const now = new Date();
+  const yearsInBusiness = Math.floor(
+    (now.getTime() - memberSince.getTime()) / (1000 * 60 * 60 * 24 * 365)
+  );
+
+  // Format location
+  const locationParts = [
+    seller.city,
+    seller.state,
+    seller.countryCode || seller.businessDetails?.country,
+  ].filter(Boolean);
+  const location = locationParts.length > 0 ? locationParts.join(", ") : "Location not specified";
+
   // 5️⃣ Prepare response (NOTHING REMOVED OR RENAMED)
   const storeData = {
     shopName:
-      seller.sellerProfile?.shopName || seller.businessDetails?.businessName,
+      seller.sellerProfile?.shopName || seller.businessDetails?.businessName || "Store",
     shopSlug: seller.sellerProfile?.shopSlug,
 
     // ⬇️ same keys — only value updated
     shopPicture,
     profilePicture,
 
-    sellerName: `${seller.firstName || ""} ${seller.lastName || ""}`.trim(),
+    sellerName: `${seller.firstName || ""} ${seller.lastName || ""}`.trim() || "Seller",
     averageRating: Number(avgRating),
     totalReviews,
     happyCustomers: totalReviews,
+    yearsInBusiness,
+    location,
     businessAddress: {
       lineAddress: seller.lineAddress || "",
       apartmentOrBuildingNumber: seller.apartmentOrBuildingNumber || "",
@@ -74,13 +91,16 @@ export const getSellerStore = catchAsync(async (req, res, next) => {
     },
     productsAvailable: productsCount,
     memberSince: seller.createdAt,
-    farmDescription: farm.description || "",
+    farmDescription: farm.description || "No description available.",
     specialties: farm.product_categories || [],
     certifications: farm.certifications || [],
     contact: {
-      phone: seller.phoneNumber || "",
-      email: seller.email || "",
-      openingHours: farm.openingHours || {},
+      phone: seller.phoneNumber || "Not provided",
+      email: seller.email || "Not provided",
+      openingHours: farm.openingHours || {
+        open: "9:00 AM",
+        close: "6:00 PM",
+      },
     },
   };
 

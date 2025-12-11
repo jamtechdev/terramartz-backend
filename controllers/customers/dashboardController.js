@@ -6,12 +6,17 @@ import { LoyaltyPoint } from "../../models/customers/loyaltyPoints.js";
 
 // 🔹 Recent Activity (Top 3 items)
 export const getRecentActivity = catchAsync(async (req, res, next) => {
-  const userId = req.user._id;
+  // Handle both _id and id formats
+  const userId = req.user._id || req.user.id;
 
-  // 🔹 Fetch last delivered orders only
+  // 🔹 Fetch last orders (all statuses, not just delivered)
   const recentOrders = await Purchase.find({
-    buyer: userId,
-    status: "delivered",
+    $or: [
+      { buyer: userId },
+      { buyer: String(userId) },
+      { buyer: req.user._id },
+      { buyer: req.user.id },
+    ]
   })
     .sort({ createdAt: -1 })
     .limit(5)
@@ -130,7 +135,16 @@ export const getActiveOrders = catchAsync(async (req, res, next) => {
 });
 
 export const getCustomerDashboardStats = catchAsync(async (req, res, next) => {
-  const userId = req.user._id;
+  // Handle both _id and id formats
+  const userId = req.user._id || req.user.id;
+  
+  if (!userId) {
+    return next(new AppError("User not authenticated", 401));
+  }
+
+  console.log("\n========== GET DASHBOARD STATS ==========");
+  console.log("📦 User ID:", userId);
+  console.log("📦 User ID type:", typeof userId);
 
   const startOfMonth = new Date(
     new Date().getFullYear(),
@@ -140,16 +154,43 @@ export const getCustomerDashboardStats = catchAsync(async (req, res, next) => {
   const endOfMonth = new Date();
 
   // ==================== 1️⃣ TOTAL ORDERS ====================
-  const totalOrders = await Purchase.countDocuments({ buyer: userId });
+  // Purchase model stores buyer as String, so convert all to strings for matching
+  const userIdString = String(userId);
+  const userIdAlt1 = req.user._id ? String(req.user._id) : null;
+  const userIdAlt2 = req.user.id ? String(req.user.id) : null;
+  
+  console.log("📦 Searching orders with buyer IDs:", { userIdString, userIdAlt1, userIdAlt2 });
+  
+  const totalOrders = await Purchase.countDocuments({
+    $or: [
+      { buyer: userIdString },
+      ...(userIdAlt1 ? [{ buyer: userIdAlt1 }] : []),
+      ...(userIdAlt2 ? [{ buyer: userIdAlt2 }] : []),
+    ].filter(Boolean)
+  });
+  
+  console.log("📦 Total orders found:", totalOrders);
 
   const monthlyOrders = await Purchase.countDocuments({
-    buyer: userId,
+    $or: [
+      { buyer: userIdString },
+      ...(userIdAlt1 ? [{ buyer: userIdAlt1 }] : []),
+      ...(userIdAlt2 ? [{ buyer: userIdAlt2 }] : []),
+    ].filter(Boolean),
     createdAt: { $gte: startOfMonth, $lte: endOfMonth },
   });
 
   // ==================== 2️⃣ TOTAL SPENT ====================
   const totalSpentResult = await Purchase.aggregate([
-    { $match: { buyer: userId } },
+    { 
+      $match: { 
+        $or: [
+          { buyer: userIdString },
+          ...(userIdAlt1 ? [{ buyer: userIdAlt1 }] : []),
+          ...(userIdAlt2 ? [{ buyer: userIdAlt2 }] : []),
+        ].filter(Boolean)
+      } 
+    },
     { $group: { _id: null, total: { $sum: "$totalAmount" } } },
   ]);
 
@@ -165,7 +206,14 @@ export const getCustomerDashboardStats = catchAsync(async (req, res, next) => {
 
   const prevMonthSpentResult = await Purchase.aggregate([
     {
-      $match: { buyer: userId, createdAt: { $gte: prevStart, $lte: prevEnd } },
+      $match: { 
+        $or: [
+          { buyer: userIdString },
+          ...(userIdAlt1 ? [{ buyer: userIdAlt1 }] : []),
+          ...(userIdAlt2 ? [{ buyer: userIdAlt2 }] : []),
+        ].filter(Boolean),
+        createdAt: { $gte: prevStart, $lte: prevEnd } 
+      },
     },
     { $group: { _id: null, total: { $sum: "$totalAmount" } } },
   ]);
@@ -186,9 +234,6 @@ export const getCustomerDashboardStats = catchAsync(async (req, res, next) => {
   const nextTierGoal = 5000; // example tier target
   const pointsToNextTier = Math.max(0, nextTierGoal - loyaltyPoints);
 
-  // ==================== 4️⃣ SAVED / WISHLIST ITEMS ====================
-  const savedItems = await WishlistProduct.countDocuments({ user: userId });
-
   // ==================== RESPONSE ====================
   res.status(200).json({
     status: "Success",
@@ -204,10 +249,6 @@ export const getCustomerDashboardStats = catchAsync(async (req, res, next) => {
       loyaltyPoints: {
         total: loyaltyPoints,
         message: `${pointsToNextTier} points to next tier`,
-      },
-      savedItems: {
-        count: savedItems,
-        message: "Awaiting your return",
       },
     },
   });

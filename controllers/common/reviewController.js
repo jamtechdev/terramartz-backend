@@ -22,6 +22,13 @@ export const createReview = catchAsync(async (req, res, next) => {
     const product = await Product.findById(productId).session(session);
     if (!product) throw new AppError("Product not found.", 404);
 
+    // 1.5️⃣ Check if user is the seller (can't review own product)
+    const userIdString = String(userId);
+    const productSellerId = String(product.createdBy);
+    if (userIdString === productSellerId) {
+      throw new AppError("You cannot review your own product.", 403);
+    }
+
     // 2️⃣ Check if user purchased the product
     const purchased = await Purchase.findOne({
       buyer: userId,
@@ -111,14 +118,131 @@ export const getProductReviews = catchAsync(async (req, res, next) => {
   const features = new APIFeatures(query, req.query).paginate();
   const reviews = await features.query;
 
-  if (!reviews || reviews.length === 0) {
-    return next(new AppError("No reviews found for this product.", 404));
-  }
+  // Calculate average rating
+  const allReviews = await Review.find({ product: productId });
+  const totalCount = allReviews.length;
+  const avgRating = totalCount > 0
+    ? allReviews.reduce((sum, r) => sum + r.rating, 0) / totalCount
+    : 0;
 
   res.status(200).json({
     status: "Success",
     count: reviews.length,
+    totalCount,
+    averageRating: avgRating,
     currentPage: req.query.page * 1 || 1,
-    reviews,
+    reviews: reviews || [],
   });
+});
+
+// ====================== UPDATE REVIEW ======================
+export const updateReview = catchAsync(async (req, res, next) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { reviewId } = req.params;
+    const { rating, message } = req.body;
+    const userId = req.user._id;
+
+    // Find review
+    const review = await Review.findOne({
+      _id: reviewId,
+      user: userId,
+    }).session(session);
+
+    if (!review) {
+      throw new AppError("Review not found or you don't have permission to edit it.", 404);
+    }
+
+    // Update review
+    if (rating !== undefined) review.rating = rating;
+    if (message !== undefined) review.message = message;
+    await review.save({ session });
+
+    // Recalculate average rating
+    const allReviews = await Review.find({ product: review.product }).session(session);
+    const totalReviews = allReviews.length;
+    const averageRating = totalReviews > 0
+      ? allReviews.reduce((sum, r) => sum + r.rating, 0) / totalReviews
+      : 0;
+
+    // Update ProductPerformance
+    let performance = await ProductPerformance.findOne({
+      product: review.product,
+    }).session(session);
+
+    if (performance) {
+      performance.rating = averageRating;
+      await performance.save({ session });
+    }
+
+    await session.commitTransaction();
+    session.endSession();
+
+    res.status(200).json({
+      status: "Success",
+      message: "Review updated successfully.",
+      review,
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    return next(error);
+  }
+});
+
+// ====================== DELETE REVIEW ======================
+export const deleteReview = catchAsync(async (req, res, next) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { reviewId } = req.params;
+    const userId = req.user._id;
+
+    // Find review
+    const review = await Review.findOne({
+      _id: reviewId,
+      user: userId,
+    }).session(session);
+
+    if (!review) {
+      throw new AppError("Review not found or you don't have permission to delete it.", 404);
+    }
+
+    const productId = review.product;
+
+    // Delete review
+    await Review.findByIdAndDelete(reviewId).session(session);
+
+    // Recalculate average rating
+    const allReviews = await Review.find({ product: productId }).session(session);
+    const totalReviews = allReviews.length;
+    const averageRating = totalReviews > 0
+      ? allReviews.reduce((sum, r) => sum + r.rating, 0) / totalReviews
+      : 0;
+
+    // Update ProductPerformance
+    let performance = await ProductPerformance.findOne({
+      product: productId,
+    }).session(session);
+
+    if (performance) {
+      performance.rating = averageRating;
+      await performance.save({ session });
+    }
+
+    await session.commitTransaction();
+    session.endSession();
+
+    res.status(200).json({
+      status: "Success",
+      message: "Review deleted successfully.",
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    return next(error);
+  }
 });

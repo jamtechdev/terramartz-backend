@@ -73,6 +73,12 @@ const purchaseSchema = new mongoose.Schema(
       type: String,
       index: true,
       unique: true,
+      sparse: true,
+    },
+    checkoutSessionId: {
+      type: String,
+      index: true,
+      sparse: true,
     },
     paymentMethod: { type: String, default: "Credit Card" },
 

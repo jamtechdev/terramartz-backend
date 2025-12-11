@@ -167,23 +167,25 @@ export const getSellerCompleteAnalytics = catchAsync(async (req, res, next) => {
   ]);
   const averageOrderValue = aovAgg[0]?.avgOrderValue || 0;
 
-  // 🔹 Customer Lifetime Value (CLV)
+  // 🔹 Customer Lifetime Value (CLV) - Use totalAmount (what user paid)
   const clvAgg = await Purchase.aggregate([
     { $unwind: "$products" },
     { $match: { "products.seller": safeObjectId(sellerId) } },
-    { $group: { _id: "$buyer", totalSpent: { $sum: "$products.price" } } },
+    { $group: { _id: "$_id", buyer: { $first: "$buyer" }, totalAmount: { $first: "$totalAmount" } } }, // Get totalAmount per order
+    { $group: { _id: "$buyer", totalSpent: { $sum: "$totalAmount" } } }, // Sum totalAmount per buyer
     { $group: { _id: null, avgLifetimeValue: { $avg: "$totalSpent" } } },
   ]);
   const customerLifetimeValue = clvAgg[0]?.avgLifetimeValue || 0;
 
-  // 🔹 Lifetime Sales (all time)
+  // 🔹 Lifetime Sales (all time) - Use totalAmount (what user paid)
   const lifetimeSalesAgg = await Purchase.aggregate([
     { $unwind: "$products" },
     { $match: { "products.seller": safeObjectId(sellerId) } },
+    { $group: { _id: "$_id", totalAmount: { $first: "$totalAmount" } } }, // Get totalAmount per order
     {
       $group: {
         _id: null,
-        totalRevenue: { $sum: "$products.price" },
+        totalRevenue: { $sum: "$totalAmount" }, // Sum all order totalAmounts
         totalOrders: { $sum: 1 },
       },
     },
@@ -193,14 +195,14 @@ export const getSellerCompleteAnalytics = catchAsync(async (req, res, next) => {
     totalOrders: lifetimeSalesAgg[0]?.totalOrders || 0,
   };
 
-  // 🔹 Daily, Weekly, Monthly, Yearly Sales
+  // 🔹 Daily, Weekly, Monthly, Yearly Sales - Use totalAmount (what user paid)
   const salesAgg = await Purchase.aggregate([
     { $unwind: "$products" },
     { $match: { "products.seller": safeObjectId(sellerId) } },
+    { $group: { _id: "$_id", totalAmount: { $first: "$totalAmount" }, createdAt: { $first: "$createdAt" } } }, // Get totalAmount per order
     {
       $project: {
-        totalAmount: "$products.price",
-        date: "$createdAt",
+        totalAmount: "$totalAmount", // Use order's totalAmount
         day: { $dayOfMonth: "$createdAt" },
         month: { $month: "$createdAt" },
         year: { $year: "$createdAt" },
@@ -272,11 +274,13 @@ export const getSellerDashboardAnalytics = catchAsync(async (req, res) => {
     if (end) matchPurchase.createdAt.$lte = end;
   }
 
-  // 🔹 Total Sales
+  // 🔹 Total Sales - Use totalAmount (what user paid) for orders containing seller's products
+  // Group by orderId first to get unique orders, then sum totalAmount
   const salesAgg = await Purchase.aggregate([
     { $unwind: "$products" },
     { $match: matchPurchase },
-    { $group: { _id: null, revenue: { $sum: "$products.price" } } },
+    { $group: { _id: "$_id", totalAmount: { $first: "$totalAmount" } } }, // Get totalAmount per order
+    { $group: { _id: null, revenue: { $sum: "$totalAmount" } } }, // Sum all order totalAmounts
   ]);
   const totalSales = salesAgg[0]?.revenue || 0;
 
@@ -301,7 +305,8 @@ export const getSellerDashboardAnalytics = catchAsync(async (req, res) => {
         createdAt: { $gte: monthStart, $lte: monthEnd },
       },
     },
-    { $group: { _id: null, revenue: { $sum: "$products.price" } } },
+    { $group: { _id: "$_id", totalAmount: { $first: "$totalAmount" } } }, // Get totalAmount per order
+    { $group: { _id: null, revenue: { $sum: "$totalAmount" } } }, // Sum all order totalAmounts
   ]);
   const currentMonthSales = currentMonthAgg[0]?.revenue || 0;
 
@@ -324,7 +329,8 @@ export const getSellerDashboardAnalytics = catchAsync(async (req, res) => {
         createdAt: { $gte: lastMonthStart, $lte: lastMonthEnd },
       },
     },
-    { $group: { _id: null, revenue: { $sum: "$products.price" } } },
+    { $group: { _id: "$_id", totalAmount: { $first: "$totalAmount" } } }, // Get totalAmount per order
+    { $group: { _id: null, revenue: { $sum: "$totalAmount" } } }, // Sum all order totalAmounts
   ]);
   const lastMonthSales = lastMonthAgg[0]?.revenue || 0;
 
@@ -512,7 +518,102 @@ export const getBestSellers = catchAsync(async (req, res, next) => {
 
   res.status(200).json({
     status: "success",
-    results: topProductsWithUrls.length,
-    data: topProductsWithUrls,
+    results: topProducts.length,
+    data: topProducts,
+  });
+});
+
+// ✅ Get Seller Earnings (Today and Overall)
+export const getSellerEarnings = catchAsync(async (req, res, next) => {
+  const sellerId = req.user._id.toString();
+
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+
+  // ✅ Today's Earnings (only paid orders) - Use totalAmount (what user paid)
+  const todayEarningsAgg = await Purchase.aggregate([
+    { $unwind: "$products" },
+    {
+      $match: {
+        "products.seller": sellerId,
+        paymentStatus: "paid",
+        createdAt: { $gte: todayStart, $lte: todayEnd },
+      },
+    },
+    { $group: { _id: "$_id", totalAmount: { $first: "$totalAmount" } } }, // Get totalAmount per order
+    {
+      $group: {
+        _id: null,
+        totalEarnings: { $sum: "$totalAmount" }, // Sum all order totalAmounts
+        orderCount: { $sum: 1 },
+      },
+    },
+  ]);
+
+  const todayEarnings = todayEarningsAgg[0]?.totalEarnings || 0;
+  const todayOrderCount = todayEarningsAgg[0]?.orderCount || 0;
+
+  // ✅ Overall Earnings (all time, only paid orders) - Use totalAmount (what user paid)
+  const overallEarningsAgg = await Purchase.aggregate([
+    { $unwind: "$products" },
+    {
+      $match: {
+        "products.seller": sellerId,
+        paymentStatus: "paid",
+      },
+    },
+    { $group: { _id: "$_id", totalAmount: { $first: "$totalAmount" } } }, // Get totalAmount per order
+    {
+      $group: {
+        _id: null,
+        totalEarnings: { $sum: "$totalAmount" }, // Sum all order totalAmounts
+        orderCount: { $sum: 1 },
+      },
+    },
+  ]);
+
+  const overallEarnings = overallEarningsAgg[0]?.totalEarnings || 0;
+  const overallOrderCount = overallEarningsAgg[0]?.orderCount || 0;
+
+  // ✅ This Month Earnings
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+  const monthEarningsAgg = await Purchase.aggregate([
+    { $unwind: "$products" },
+    {
+      $match: {
+        "products.seller": sellerId,
+        paymentStatus: "paid",
+        createdAt: { $gte: monthStart, $lte: monthEnd },
+      },
+    },
+    { $group: { _id: "$_id", totalAmount: { $first: "$totalAmount" } } }, // Get totalAmount per order
+    {
+      $group: {
+        _id: null,
+        totalEarnings: { $sum: "$totalAmount" }, // Sum all order totalAmounts
+      },
+    },
+  ]);
+
+  const monthEarnings = monthEarningsAgg[0]?.totalEarnings || 0;
+
+  res.status(200).json({
+    status: "success",
+    earnings: {
+      today: {
+        amount: todayEarnings,
+        orderCount: todayOrderCount,
+      },
+      thisMonth: {
+        amount: monthEarnings,
+      },
+      overall: {
+        amount: overallEarnings,
+        orderCount: overallOrderCount,
+      },
+    },
   });
 });

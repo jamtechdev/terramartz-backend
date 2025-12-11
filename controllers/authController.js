@@ -155,14 +155,15 @@ export const signup = catchAsync(async (req, res, next) => {
 
 //protect function implementation
 export const protect = catchAsync(async (req, res, next) => {
-  //1)Getting token and check of it's there
-
+  // Accept token from Authorization header OR cookies ("token" or "jwt")
   let token;
   if (
     req.headers.authorization &&
     req.headers.authorization.startsWith("Bearer")
   ) {
     token = req.headers.authorization.split(" ")[1];
+  } else if (req.cookies && (req.cookies.token || req.cookies.jwt)) {
+    token = req.cookies.token || req.cookies.jwt;
   }
 
   if (!token) {

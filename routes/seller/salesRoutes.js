@@ -28,6 +28,14 @@ router.get(
   salesAnalyticsController.getSellerDashboardAnalytics
 );
 
+// GET seller earnings (today and overall)
+router.get(
+  "/earnings",
+  protect,
+  restrictToSeller,
+  salesAnalyticsController.getSellerEarnings
+);
+
 // GET seller orders list (with pagination)
 router.get(
   "/orders/",
