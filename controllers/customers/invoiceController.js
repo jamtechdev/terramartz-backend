@@ -39,14 +39,52 @@ export const generateInvoice = catchAsync(async (req, res, next) => {
   // Get buyer details
   const buyer = await User.findById(userId).select("name email").lean();
 
-  // Calculate totals
-  const subtotal = order.products.reduce(
-    (sum, p) => sum + p.price * p.quantity,
-    0
-  );
-  const tax = order.shippingAddress?.taxAmount || 0;
-  const shipping = order.shippingAddress?.shippingCost || 0;
-  const total = order.totalAmount || subtotal + tax + shipping;
+  // Calculate totals - use stored prices from order
+  let subtotal = 0;
+  order.products.forEach((p) => {
+    const itemPrice = Number(p.price) || 0;
+    const itemQuantity = Number(p.quantity) || 0;
+    subtotal += itemPrice * itemQuantity;
+  });
+  
+  // Round subtotal to 2 decimal places
+  subtotal = Math.round(subtotal * 100) / 100;
+  
+  // Get tax and shipping from shippingAddress (now stored properly)
+  const tax = Number(order.shippingAddress?.taxAmount) || 0;
+  const shipping = Number(order.shippingAddress?.shippingCost) || 0;
+  
+  // Calculate expected total
+  const calculatedTotal = Math.round((subtotal + tax + shipping) * 100) / 100;
+  
+  // Use stored totalAmount
+  const storedTotal = order.totalAmount ? Number(order.totalAmount) : calculatedTotal;
+  
+  // Calculate difference (other fees, rounding, etc.)
+  const otherFees = Math.round((storedTotal - calculatedTotal) * 100) / 100;
+  
+  // Final total should match stored total
+  const total = storedTotal;
+  
+  console.log("📄 Invoice Calculation:", {
+    subtotal,
+    tax,
+    shipping,
+    calculatedTotal,
+    otherFees,
+    storedTotalAmount: order.totalAmount,
+    finalTotal: total,
+    shippingAddress: {
+      taxAmount: order.shippingAddress?.taxAmount,
+      shippingCost: order.shippingAddress?.shippingCost,
+    },
+    products: order.products.map(p => ({
+      name: p.product?.title || p.product?.name,
+      price: p.price,
+      quantity: p.quantity,
+      lineTotal: (Number(p.price) || 0) * (Number(p.quantity) || 0)
+    }))
+  });
 
   // Generate HTML invoice
   const invoiceHTML = `
@@ -259,16 +297,22 @@ export const generateInvoice = catchAsync(async (req, res, next) => {
         <span>Subtotal:</span>
         <span>$${subtotal.toFixed(2)}</span>
       </div>
-      ${shipping > 0 ? `
+      ${shipping !== 0 ? `
       <div class="total-row">
         <span>Shipping:</span>
         <span>$${shipping.toFixed(2)}</span>
       </div>
       ` : ''}
-      ${tax > 0 ? `
+      ${tax !== 0 ? `
       <div class="total-row">
         <span>Tax:</span>
         <span>$${tax.toFixed(2)}</span>
+      </div>
+      ` : ''}
+      ${otherFees !== 0 ? `
+      <div class="total-row">
+        <span>Other Fees:</span>
+        <span>$${otherFees.toFixed(2)}</span>
       </div>
       ` : ''}
       <div class="total-row">

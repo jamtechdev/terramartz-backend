@@ -266,9 +266,16 @@ export const webhookPayment = async (req, res, next) => {
       const metadata = session.metadata || {};
       const buyer = metadata.buyer;
       const products = metadata.products ? JSON.parse(metadata.products) : [];
-      const shippingAddress = metadata.shippingAddress
+      let shippingAddress = metadata.shippingAddress
         ? JSON.parse(metadata.shippingAddress)
         : {};
+      
+      // Add taxAmount and shippingCost to shippingAddress for invoice display
+      const taxAmount = metadata.taxAmount ? Number(metadata.taxAmount) : 0;
+      const shippingCost = metadata.shippingCost ? Number(metadata.shippingCost) : 0;
+      
+      shippingAddress.taxAmount = taxAmount;
+      shippingAddress.shippingCost = shippingCost;
 
       if (!buyer || !products.length) {
         console.error("Missing buyer or products in checkout session metadata");
@@ -797,6 +804,13 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
     console.error("Failed to parse shipping address from metadata:", parseError);
     // Continue with empty address if parsing fails
   }
+  
+  // Add taxAmount and shippingCost to shippingAddress for invoice display
+  const taxAmount = metadata.taxAmount ? Number(metadata.taxAmount) : 0;
+  const shippingCost = metadata.shippingCost ? Number(metadata.shippingCost) : 0;
+  
+  shippingAddress.taxAmount = taxAmount;
+  shippingAddress.shippingCost = shippingCost;
 
   console.log("📦 Creating order with products:", products.length);
   console.log("📦 Products data:", JSON.stringify(products, null, 2));
