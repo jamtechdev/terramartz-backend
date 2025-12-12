@@ -9,6 +9,7 @@ import { Purchase } from "../../models/customers/purchase.js";
 import { ProductPerformance } from "../../models/seller/productPerformance.js";
 import { Farm } from "../../models/seller/farm.js";
 import { User } from "../../models/users.js";
+import { Category } from "../../models/super-admin/category.js";
 // import { getPresignedUrl } from "../../utils/awsS3.js";
 import catchAsync from "../../utils/catchasync.js";
 import AppError from "../../utils/apperror.js";
@@ -27,11 +28,18 @@ export const createProduct = catchAsync(async (req, res, next) => {
   try {
     req.body.createdBy = req.user._id;
 
-    // Debug: Log files received
+    // Debug: Log files received and category
     console.log('📸 Files received:', {
       filesCount: req.files?.length || 0,
       files: req.files?.map(f => ({ fieldname: f.fieldname, originalname: f.originalname, mimetype: f.mimetype, size: f.size })) || [],
       bodyKeys: Object.keys(req.body),
+    });
+    
+    // Debug: Log category value
+    console.log('📂 Category received:', {
+      category: req.body.category,
+      categoryType: typeof req.body.category,
+      hasCategory: !!req.body.category,
     });
 
     // 🔹 S3 upload for productImages
@@ -57,9 +65,74 @@ export const createProduct = catchAsync(async (req, res, next) => {
       console.warn('⚠️ No files received in req.files. Files might not be uploaded properly.');
     }
 
+    // 🔹 Validate category exists
+    if (!req.body.category) {
+      throw new AppError("Category is required", 400);
+    }
+    
+    // 🔹 Verify category exists in database
+    // Category model uses String _id, but database might have ObjectId format from old data
+    // Try to find category using the ID as-is (MongoDB will handle the conversion)
+    const categoryId = String(req.body.category).trim();
+    
+    // Try multiple lookup strategies
+    let categoryExists = await Category.findOne({ _id: categoryId }).session(session);
+    
+    // If not found, try without session
+    if (!categoryExists) {
+      categoryExists = await Category.findOne({ _id: categoryId });
+    }
+    
+    // If still not found and it's a valid ObjectId, try with ObjectId conversion
+    // (Some old categories might be stored as ObjectId in MongoDB even though schema says String)
+    if (!categoryExists && mongoose.Types.ObjectId.isValid(categoryId)) {
+      try {
+        // Try with ObjectId - MongoDB might have stored it as ObjectId
+        const objectId = new mongoose.Types.ObjectId(categoryId);
+        categoryExists = await Category.findById(objectId).session(session) || 
+                        await Category.findById(objectId);
+      } catch (err) {
+        // Ignore ObjectId conversion errors
+      }
+    }
+    
+    if (!categoryExists) {
+      // Get all categories for debugging
+      const allCategories = await Category.find({}).select('_id name').limit(50).lean();
+      
+      console.error('❌ Category lookup failed:', {
+        requestedId: categoryId,
+        requestedIdLength: categoryId.length,
+        requestedIdFormat: categoryId.includes('-') ? 'UUID-like' : 'ObjectId-like',
+        totalCategoriesInDB: allCategories.length,
+        sampleCategoryIds: allCategories.slice(0, 5).map(c => ({
+          id: String(c._id),
+          name: c.name,
+          length: String(c._id).length
+        }))
+      });
+      
+      throw new AppError(`Category with ID ${categoryId} does not exist. Please select a valid category.`, 400);
+    }
+    
+    console.log('✅ Category verified:', {
+      categoryId: categoryExists._id,
+      categoryName: categoryExists.name,
+      categoryIdType: typeof categoryExists._id,
+      categoryIdString: String(categoryExists._id),
+    });
+    
     // 🔹 Product create (slug auto-generate model pre-save hook এ)
     const productDocs = await Product.create([req.body], { session });
     const product = productDocs[0];
+    
+    // Debug: Log created product category
+    console.log('✅ Product created:', {
+      productId: product._id,
+      category: product.category,
+      categoryType: typeof product.category,
+      categoryMatches: product.category === req.body.category,
+    });
 
     // 🔹 ProductPerformance create
     await ProductPerformance.create(
@@ -85,6 +158,12 @@ export const createProduct = catchAsync(async (req, res, next) => {
     await session.commitTransaction();
     session.endSession();
 
+    // 🔹 Populate category for response
+    await product.populate({
+      path: "category",
+      select: "name _id",
+    });
+
     // 🔹 Apply presigned URLs for product images
     const productImagesWithUrls = await Promise.all(
       (product.productImages || []).map((img) =>
@@ -98,6 +177,9 @@ export const createProduct = catchAsync(async (req, res, next) => {
       message: "Product created successfully",
       product: {
         ...product.toObject(),
+        category: product.category
+          ? { _id: product.category._id, name: product.category.name }
+          : null,
         productImages: productImagesWithUrls, // ✅ presigned URLs applied
       },
     });
