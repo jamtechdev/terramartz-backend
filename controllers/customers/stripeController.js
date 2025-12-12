@@ -639,12 +639,40 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
   }
 
   // 💡 Step 8: Create Stripe Checkout Session
+  // Get frontend URL from environment or detect from request origin
+  const getFrontendUrl = () => {
+    // Priority: 1. Environment variable, 2. Request origin, 3. Default localhost
+    if (process.env.FRONTEND_URL) {
+      return process.env.FRONTEND_URL;
+    }
+    
+    // Try to get from request origin (for production)
+    const origin = req.headers.origin || req.headers.referer;
+    if (origin) {
+      try {
+        const url = new URL(origin);
+        // If it's not localhost, use it
+        if (!url.hostname.includes('localhost') && !url.hostname.includes('127.0.0.1')) {
+          return `${url.protocol}//${url.host}`;
+        }
+      } catch (e) {
+        console.warn('Could not parse origin:', origin);
+      }
+    }
+    
+    // Fallback to localhost for development
+    return 'http://localhost:3000';
+  };
+  
+  const frontendUrl = getFrontendUrl();
+  console.log('🌐 Frontend URL for Stripe redirect:', frontendUrl);
+  
   const sessionConfig = {
     payment_method_types: ["card"],
     line_items: lineItems,
     mode: "payment",
-    success_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/order-success?session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/order-cancel`,
+    success_url: `${frontendUrl}/order-success?session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${frontendUrl}/order-cancel`,
     metadata: metadata,
     // Removed shipping_address_collection - shipping address is already collected before Stripe
   };
