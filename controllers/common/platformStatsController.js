@@ -1,7 +1,7 @@
 import { User } from "../../models/users.js";
 import { Purchase } from "../../models/customers/purchase.js";
 import { Review } from "../../models/common/review.js";
-import catchAsync from "../../utils/catchAsync.js";
+import catchAsync from "../../utils/catchasync.js";
 
 // Public stats for Seller Portal / marketing pages
 export const getSellerPortalStats = catchAsync(async (req, res, next) => {
