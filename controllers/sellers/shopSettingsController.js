@@ -3,7 +3,7 @@ import crypto from "crypto";
 import {
   uploadToS3,
   deleteFileFromS3,
-  getPresignedUrl,
+  getDirectUrl,
 } from "../../utils/awsS3.js";
 import { User } from "../../models/users.js";
 import { Farm } from "../../models/seller/farm.js";
@@ -175,18 +175,18 @@ export const updateShopSettings = catchAsync(async (req, res, next) => {
     await session.commitTransaction();
     session.endSession();
 
-    // 🔹 PRESIGNED URL SECTION
+    // 🔹 Direct S3 URL SECTION
     let shopPictureUrl = null;
     let profilePictureUrl = null;
 
     if (seller.sellerProfile?.shopPicture) {
-      shopPictureUrl = await getPresignedUrl(
+      shopPictureUrl = getDirectUrl(
         `shopPicture/${seller.sellerProfile.shopPicture}`
       );
     }
 
     if (seller.profilePicture) {
-      profilePictureUrl = await getPresignedUrl(
+      profilePictureUrl = getDirectUrl(
         `profilePicture/${seller.profilePicture}`
       );
     }
@@ -469,47 +469,40 @@ export const searchFarms = async (req, res, next) => {
       ).toFixed(1)} km`;
     }
 
-    // 🔹 Presigned URLs apply for farm & product images
-    const farmsWithUrls = await Promise.all(
-      farms.map(async (farm) => {
-        const farmOwner = { ...farm.ownerData };
+    // 🔹 Direct S3 URLs apply for farm & product images
+    const farmsWithUrls = farms.map((farm) => {
+      const farmOwner = { ...farm.ownerData };
 
-        // Farm owner profile picture
-        if (farmOwner.profilePicture) {
-          farmOwner.profilePicture = await getPresignedUrl(
-            `profilePicture/${farmOwner.profilePicture}`
-          );
-        }
-
-        // Seller shop picture
-        if (farmOwner.sellerProfile?.shopPicture) {
-          farmOwner.sellerProfile.shopPicture = await getPresignedUrl(
-            `shopPicture/${farmOwner.sellerProfile.shopPicture}`
-          );
-        }
-
-        // Products images
-        const productsWithUrls = await Promise.all(
-          (farm.products || []).map(async (prod) => {
-            if (prod.productImages && prod.productImages.length > 0) {
-              const presignedImages = await Promise.all(
-                prod.productImages.map((img) =>
-                  getPresignedUrl(`products/${img}`)
-                )
-              );
-              prod.productImages = presignedImages;
-            }
-            return prod;
-          })
+      // Farm owner profile picture
+      if (farmOwner.profilePicture) {
+        farmOwner.profilePicture = getDirectUrl(
+          `profilePicture/${farmOwner.profilePicture}`
         );
+      }
 
-        return {
-          ...farm,
-          ownerData: farmOwner,
-          products: productsWithUrls,
-        };
-      })
-    );
+      // Seller shop picture
+      if (farmOwner.sellerProfile?.shopPicture) {
+        farmOwner.sellerProfile.shopPicture = getDirectUrl(
+          `shopPicture/${farmOwner.sellerProfile.shopPicture}`
+        );
+      }
+
+      // Products images
+      const productsWithUrls = (farm.products || []).map((prod) => {
+        if (prod.productImages && prod.productImages.length > 0) {
+          prod.productImages = prod.productImages.map((img) =>
+            getDirectUrl(`products/${img}`)
+          );
+        }
+        return prod;
+      });
+
+      return {
+        ...farm,
+        ownerData: farmOwner,
+        products: productsWithUrls,
+      };
+    });
 
     res.status(200).json({
       success: true,
@@ -574,31 +567,29 @@ export const getFarmProductsInformation = async (req, res, next) => {
     // 🔹 Presigned URL for product images
     products = await Promise.all(
       products.map(async (p) => {
-        const imagesWithPresigned = await Promise.all(
-          (p.productImages || []).map((img) =>
-            getPresignedUrl(`products/${img}`)
-          )
+        const imagesWithDirect = (p.productImages || []).map((img) =>
+          getDirectUrl(`products/${img}`)
         );
         return {
           ...p,
-          productImages: imagesWithPresigned,
+          productImages: imagesWithDirect,
         };
       })
     );
 
-    // 🔹 Presigned URL for farm owner profile picture & shop picture
+    // 🔹 Direct S3 URL for farm owner profile picture & shop picture
     let owner = farm.owner;
     let ownerProfilePictureUrl = null;
     let shopPictureUrl = null;
 
     if (owner) {
       if (owner.profilePicture) {
-        ownerProfilePictureUrl = await getPresignedUrl(
+        ownerProfilePictureUrl = getDirectUrl(
           `profilePicture/${owner.profilePicture}`
         );
       }
       if (owner.sellerProfile?.shopPicture) {
-        shopPictureUrl = await getPresignedUrl(
+        shopPictureUrl = getDirectUrl(
           `shopPicture/${owner.sellerProfile.shopPicture}`
         );
       }
@@ -644,8 +635,8 @@ export const getFarmsForMap = catchAsync(async (req, res, next) => {
     if (farmStatus) {
       matchQuery.farm_status = { $in: farmStatus.split(",") };
     } else {
-      // Default: only show active and featured farms on map
-      matchQuery.farm_status = { $in: ["active", "featured"] };
+      // Default: show active, featured, and pending farms so new farms appear
+      matchQuery.farm_status = { $in: ["active", "featured", "pending"] };
     }
 
     // Exclude farms with default coordinates [0, 0]
@@ -745,9 +736,14 @@ export const getFarmsForMap = catchAsync(async (req, res, next) => {
         latitude: farm.coordinates?.[1] || null,
         longitude: farm.coordinates?.[0] || null,
         farmStatus: farm.farm_status,
-        shopPicture: farm.shopPicture,
+        shopPicture: farm.shopPicture ? getDirectUrl(`shopPicture/${farm.shopPicture}`) : null,
         description: farm.description,
-        products: farm.products || [], // ✅ Farm ke products
+        products: (farm.products || []).map((prod) => ({
+          ...prod,
+          productImages: (prod.productImages || []).map((img) =>
+            getDirectUrl(`products/${img}`)
+          ),
+        })),
         productCount: farm.products?.length || 0,
       })),
     });

@@ -28,6 +28,7 @@
     "mongoose": "^8.15.2",
     "morgan": "^1.10.1",
     "multer": "^2.0.1",
+    "node-cron": "^3.0.3",
     "nanoid": "^5.1.6",
     "nodemailer": "^6.10.1",
     "pug": "^3.0.3",

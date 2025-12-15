@@ -2,7 +2,7 @@ import mongoose from "mongoose";
 import {
   uploadToS3,
   deleteFileFromS3,
-  getPresignedUrl,
+  getDirectUrl,
 } from "../../utils/awsS3.js";
 import { Product } from "../../models/seller/product.js";
 import { Purchase } from "../../models/customers/purchase.js";
@@ -164,11 +164,9 @@ export const createProduct = catchAsync(async (req, res, next) => {
       select: "name _id",
     });
 
-    // 🔹 Apply presigned URLs for product images
-    const productImagesWithUrls = await Promise.all(
-      (product.productImages || []).map((img) =>
-        getPresignedUrl(`products/${img}`)
-      )
+    // 🔹 Generate direct S3 URLs for product images
+    const productImagesWithUrls = (product.productImages || []).map((img) =>
+      getDirectUrl(`products/${img}`)
     );
 
     // 🔹 Response
@@ -222,21 +220,19 @@ export const getProduct = catchAsync(async (req, res, next) => {
     product: req.params.id,
   });
 
-  // 🔹 PRESIGNED URL APPLY
+  // 🔹 Generate direct S3 URLs
   const productImages = product.productImages
-    ? await Promise.all(
-        product.productImages.map((img) => getPresignedUrl(`products/${img}`))
-      )
+    ? product.productImages.map((img) => getDirectUrl(`products/${img}`))
     : [];
 
   const category = product.category
     ? {
         ...product.category.toObject(),
         image: product.category.image
-          ? await getPresignedUrl(`categories/${product.category.image}`)
+          ? getDirectUrl(`categories/${product.category.image}`)
           : null,
         logo: product.category.logo
-          ? await getPresignedUrl(`categories/${product.category.logo}`)
+          ? getDirectUrl(`categories/${product.category.logo}`)
           : null,
       }
     : null;
@@ -312,13 +308,11 @@ export const updateProduct = catchAsync(async (req, res, next) => {
     await session.commitTransaction();
     session.endSession();
 
-    // 🔹 Presigned URL apply for product images
+    // 🔹 Generate direct S3 URLs for product images
     let productImagesWithUrls = [];
     if (product.productImages && product.productImages.length > 0) {
-      productImagesWithUrls = await Promise.all(
-        product.productImages.map((imgKey) =>
-          getPresignedUrl(`products/${imgKey}`)
-        )
+      productImagesWithUrls = product.productImages.map((imgKey) =>
+        getDirectUrl(`products/${imgKey}`)
       );
     }
 
@@ -444,13 +438,11 @@ export const incrementSalesAndUpdateStock = catchAsync(
       product.stockQuantity -= quantity;
       await product.save({ session });
 
-      // 🔥 4️⃣ Prepare productImages with Presigned URLs (ADD ONLY THIS)
+      // 🔥 4️⃣ Prepare productImages with direct S3 URLs
       let productImagesWithUrl = [];
       if (product.productImages && product.productImages.length > 0) {
-        productImagesWithUrl = await Promise.all(
-          product.productImages.map(async (imgKey) => {
-            return await getPresignedUrl(`products/${imgKey}`);
-          })
+        productImagesWithUrl = product.productImages.map((imgKey) =>
+          getDirectUrl(`products/${imgKey}`)
         );
       }
 
@@ -669,74 +661,71 @@ export const getAllProductWithPerformance = catchAsync(
       performanceMap[p.product.toString()] = p;
     });
 
-    // 🔹 Build response with presigned URLs
-    const productsWithPerformance = await Promise.all(
-      products.map(async (p) => {
-        // 🔹 Presigned URLs for product images
-        let productImages = p.productImages || [];
-        productImages = await Promise.all(
-          productImages.map((img) => getPresignedUrl(`products/${img}`))
-        );
+    // 🔹 Build response with direct S3 URLs
+    const productsWithPerformance = products.map((p) => {
+      // 🔹 Direct S3 URLs for product images
+      let productImages = (p.productImages || []).map((img) =>
+        getDirectUrl(`products/${img}`)
+      );
 
-        let seller = null;
-        if (p.createdBy) {
-          // 🔹 Profile Picture
-          let profilePictureUrl = null;
-          if (p.createdBy.profilePicture) {
-            profilePictureUrl = await getPresignedUrl(
-              `profilePicture/${p.createdBy.profilePicture}`
-            );
-          }
-
-          // 🔹 Shop Picture
-          let shopPictureUrl = null;
-          if (p.createdBy.sellerProfile?.shopPicture) {
-            shopPictureUrl = await getPresignedUrl(
-              `shopPicture/${p.createdBy.sellerProfile.shopPicture}`
-            );
-          }
-
-          seller = {
-            _id: p.createdBy._id,
-            name: `${p.createdBy.firstName || ""} ${
-              p.createdBy.middleName || ""
-            } ${p.createdBy.lastName || ""}`
-              .replace(/\s+/g, " ")
-              .trim(),
-            profilePicture: profilePictureUrl,
-            shopName: p.createdBy.businessDetails?.businessName || null,
-            shopLocation: p.createdBy.businessDetails?.businessLocation || null,
-            shopPicture: shopPictureUrl, // 🔹 Added shopPicture
-          };
+      let seller = null;
+      if (p.createdBy) {
+        // 🔹 Profile Picture
+        let profilePictureUrl = null;
+        if (p.createdBy.profilePicture) {
+          profilePictureUrl = getDirectUrl(
+            `profilePicture/${p.createdBy.profilePicture}`
+          );
         }
 
-        return {
-          _id: p._id,
-          title: p.title,
-          slug: p.slug || "",
-          description: p.description,
-          price: p.price,
-          originalPrice: p.originalPrice,
-          category: p.category,
-          stockQuantity: p.stockQuantity,
-          productImages,
-          tags: p.tags || [],
-          organic: p.organic,
-          featured: p.featured,
-          productType: p.productType,
-          status: p.status,
-          createdAt: p.createdAt,
-          updatedAt: p.updatedAt,
-          performance: performanceMap[p._id.toString()] || {
-            views: 0,
-            totalSales: 0,
-            rating: 0,
-            currentStock: p.stockQuantity || 0,
-          },
-          seller,
+        // 🔹 Shop Picture
+        let shopPictureUrl = null;
+        if (p.createdBy.sellerProfile?.shopPicture) {
+          shopPictureUrl = getDirectUrl(
+            `shopPicture/${p.createdBy.sellerProfile.shopPicture}`
+          );
+        }
+
+        seller = {
+          _id: p.createdBy._id,
+          name: `${p.createdBy.firstName || ""} ${
+            p.createdBy.middleName || ""
+          } ${p.createdBy.lastName || ""}`
+            .replace(/\s+/g, " ")
+            .trim(),
+          profilePicture: profilePictureUrl,
+          shopName: p.createdBy.businessDetails?.businessName || null,
+          shopLocation: p.createdBy.businessDetails?.businessLocation || null,
+          shopPicture: shopPictureUrl, // 🔹 Added shopPicture
         };
-      })
-    );
+      }
+
+      return {
+        _id: p._id,
+        title: p.title,
+        slug: p.slug || "",
+        description: p.description,
+        price: p.price,
+        originalPrice: p.originalPrice,
+        category: p.category,
+        stockQuantity: p.stockQuantity,
+        productImages,
+        tags: p.tags || [],
+        organic: p.organic,
+        featured: p.featured,
+        productType: p.productType,
+        status: p.status,
+        createdAt: p.createdAt,
+        updatedAt: p.updatedAt,
+        performance: performanceMap[p._id.toString()] || {
+          views: 0,
+          totalSales: 0,
+          rating: 0,
+          currentStock: p.stockQuantity || 0,
+        },
+        seller,
+      };
+    });
 
     res.status(200).json({
       status: "success",
@@ -869,13 +858,11 @@ export const getSellerProductsWithPerformance = catchAsync(
 
         const totalSold = productSalesMap[p._id.toString()] || 0;
 
-        // 🔹 Presigned URL for product images
+        // 🔹 Direct S3 URL for product images
         let productImagesWithUrl = [];
         if (p.productImages && p.productImages.length > 0) {
-          productImagesWithUrl = await Promise.all(
-            p.productImages.map(async (imgKey) => {
-              return await getPresignedUrl(`products/${imgKey}`);
-            })
+          productImagesWithUrl = p.productImages.map((imgKey) =>
+            getDirectUrl(`products/${imgKey}`)
           );
         }
 
@@ -889,7 +876,7 @@ export const getSellerProductsWithPerformance = catchAsync(
             ? { _id: p.category._id, name: p.category.name }
             : null,
           stockQuantity: p.stockQuantity,
-          productImages: productImagesWithUrl, // ✅ presigned URLs
+          productImages: productImagesWithUrl, // ✅ direct S3 URLs
           tags: p.tags || [],
           organic: p.organic,
           featured: p.featured,

@@ -14,7 +14,7 @@ import AppError from "../../utils/apperror.js";
 import APIFeatures from "../../utils/apiFeatures.js";
 import {
   uploadToS3,
-  getPresignedUrl,
+  getDirectUrl,
   deleteFileFromS3,
 } from "../../utils/awsS3.js";
 
@@ -78,21 +78,17 @@ export const createCategory = catchAsync(async (req, res, next) => {
     createdBy: req.user._id,
   });
 
-  // 🔹 Presigned URL generate
-  const presignedImage = image
-    ? await getPresignedUrl(`categories/${image}`)
-    : null;
-  const presignedLogo = logo
-    ? await getPresignedUrl(`categories/${logo}`)
-    : null;
+  // 🔹 Generate direct S3 URLs
+  const imageUrl = image ? getDirectUrl(`categories/${image}`) : null;
+  const logoUrl = logo ? getDirectUrl(`categories/${logo}`) : null;
 
   res.status(201).json({
     status: "success",
     message: "Category created successfully.",
     category: {
       ...category.toObject(),
-      image: presignedImage,
-      logo: presignedLogo,
+      image: imageUrl,
+      logo: logoUrl,
     },
   });
 });
@@ -143,12 +139,12 @@ export const updateCategory = catchAsync(async (req, res, next) => {
 
   await category.save();
 
-  // 🔹 Generate presigned URLs for response
+  // 🔹 Generate direct S3 URLs for response
   const imageUrl = category.image
-    ? await getPresignedUrl(`categories/${category.image}`)
+    ? getDirectUrl(`categories/${category.image}`)
     : null;
   const logoUrl = category.logo
-    ? await getPresignedUrl(`categories/${category.logo}`)
+    ? getDirectUrl(`categories/${category.logo}`)
     : null;
 
   res.status(200).json({
@@ -223,25 +219,51 @@ export const getAllCategories = catchAsync(async (req, res, next) => {
   const features = new APIFeatures(query, req.query).paginate();
   const categories = await features.query;
 
-  // 🔹 Generate presigned URLs for image and logo
-  const categoriesWithUrls = await Promise.all(
-    categories.map(async (category) => {
-      const categoryCopy = category.toObject();
+  // 🔹 Generate direct S3 URLs for image and logo
+  const categoriesWithUrls = categories.map((category) => {
+    const categoryCopy = category.toObject();
 
-      // if (categoryCopy.image) {
-      //   categoryCopy.image = await getPresignedUrl(
-      //     `categories/${categoryCopy.image}`
-      //   );
-      // }
-      // if (categoryCopy.logo) {
-      //   categoryCopy.logo = await getPresignedUrl(
-      //     `categories/${categoryCopy.logo}`
-      //   );
-      // }
+    // Helper function to extract S3 key from URL or use key directly
+    const extractS3Key = (urlOrKey) => {
+      if (!urlOrKey) return null;
+      
+      // If it's already a key (no http), return it
+      if (!urlOrKey.startsWith('http')) {
+        return urlOrKey;
+      }
+      
+      // Extract key from URL
+      // URL format: https://bucket.s3.region.amazonaws.com/path/to/file
+      try {
+        const url = new URL(urlOrKey);
+        // Remove leading slash and get the path
+        let key = url.pathname.substring(1); // Remove leading '/'
+        
+        // If key doesn't have a folder prefix, assume it's in categories/
+        if (!key.includes('/')) {
+          key = `categories/${key}`;
+        }
+        
+        return key;
+      } catch (err) {
+        console.error(`Error extracting key from URL: ${urlOrKey}`, err);
+        return null;
+      }
+    };
 
-      return categoryCopy;
-    })
-  );
+    // Convert to direct URLs
+    if (categoryCopy.image) {
+      const s3Key = extractS3Key(categoryCopy.image);
+      categoryCopy.image = s3Key ? getDirectUrl(s3Key) : categoryCopy.image;
+    }
+    
+    if (categoryCopy.logo) {
+      const s3Key = extractS3Key(categoryCopy.logo);
+      categoryCopy.logo = s3Key ? getDirectUrl(s3Key) : categoryCopy.logo;
+    }
+
+    return categoryCopy;
+  });
 
   res.status(200).json({
     status: "success",
@@ -264,17 +286,13 @@ export const getCategory = catchAsync(async (req, res, next) => {
 
   const categoryCopy = category.toObject();
 
-  // 🔹 Generate presigned URLs for image and logo
-  // if (categoryCopy.image) {
-  //   categoryCopy.image = await getPresignedUrl(
-  //     `categories/${categoryCopy.image}`
-  //   );
-  // }
-  // if (categoryCopy.logo) {
-  //   categoryCopy.logo = await getPresignedUrl(
-  //     `categories/${categoryCopy.logo}`
-  //   );
-  // }
+  // 🔹 Generate direct S3 URLs for image and logo
+  if (categoryCopy.image) {
+    categoryCopy.image = getDirectUrl(`categories/${categoryCopy.image}`);
+  }
+  if (categoryCopy.logo) {
+    categoryCopy.logo = getDirectUrl(`categories/${categoryCopy.logo}`);
+  }
 
   res.status(200).json({
     status: "success",
@@ -310,6 +328,7 @@ export const deleteCategory = catchAsync(async (req, res, next) => {
 
 // 127.0.0.1:7345/api/category/slug/fresh-fruit-vegetable?page=1&limit=10&search=ideal&productType=organic&priceMin=10&priceMax=700&featured=true&organic=true&sort=highestRated
 
+
 export const getCategoryWithProductsAdvanced = catchAsync(
   async (req, res, next) => {
     const { slug } = req.params;
@@ -318,17 +337,13 @@ export const getCategoryWithProductsAdvanced = catchAsync(
     const category = await Category.findOne({ slug });
     if (!category) return next(new AppError("Category not found.", 404));
 
-    // 🔹 S3: presigned URL for category image & logo
+    // 🔹 S3: direct URL for category image & logo
     const categoryCopy = category.toObject();
     if (categoryCopy.image) {
-      categoryCopy.image = await getPresignedUrl(
-        `categories/${categoryCopy.image}`
-      );
+      categoryCopy.image = getDirectUrl(`categories/${categoryCopy.image}`);
     }
     if (categoryCopy.logo) {
-      categoryCopy.logo = await getPresignedUrl(
-        `categories/${categoryCopy.logo}`
-      );
+      categoryCopy.logo = getDirectUrl(`categories/${categoryCopy.logo}`);
     }
 
     // 2️⃣ Build match object for aggregation
@@ -463,19 +478,14 @@ export const getCategoryWithProductsAdvanced = catchAsync(
         }
 
         if (prodCopy.productImages && Array.isArray(prodCopy.productImages) && prodCopy.productImages.length > 0) {
-          prodCopy.productImages = await Promise.all(
-            prodCopy.productImages.map(async (imgKey) => {
-              try {
-                const url = await getPresignedUrl(`products/${imgKey}`);
-                return url;
-              } catch (error) {
-                console.error(`Error generating presigned URL for ${imgKey}:`, error);
-                return null;
-              }
-            })
-          );
-          // Filter out any null values
-          prodCopy.productImages = prodCopy.productImages.filter(url => url !== null);
+          prodCopy.productImages = prodCopy.productImages.map((imgKey) => {
+            try {
+              return getDirectUrl(`products/${imgKey}`);
+            } catch (error) {
+              console.error(`Error generating direct URL for ${imgKey}:`, error);
+              return null;
+            }
+          }).filter(url => url !== null);
         } else {
           // Ensure productImages is always an array
           prodCopy.productImages = [];
