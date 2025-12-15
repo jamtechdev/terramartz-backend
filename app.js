@@ -32,10 +32,10 @@ import customersWishlistRoutes from "./routes/customers/wishlistRoutes.js";
 import customersDashboardRoutes from "./routes/customers/dashboardRoutes.js";
 import sellerStoreDetailRoutes from "./routes/seller/sellerStoreDetailRoutes.js";
 import userLatestRoutes from "./routes/customers/usersRoutes.js";
-
 // new api design part
 import customersCategoriesRoutes from "./routes/customers/categoriesRoutes.js";
 import customersProductsRoutes from "./routes/customers/productsRoutes.js";
+import platformStatsRoutes from "./routes/common/platformStatsRoutes.js";
 
 // =====================
 // __dirname setup
@@ -134,6 +134,7 @@ app.use("/api/terramartz/products", customersProductsRoutes);
 app.use("/api/terramartz/wishlist", customersWishlistRoutes);
 app.use("/api/terramartz/customer", customersDashboardRoutes);
 app.use("/api/terramartz/sellers", sellerStoreDetailRoutes);
+app.use("/api/stats", platformStatsRoutes);
 
 // =====================
 // Swagger UI

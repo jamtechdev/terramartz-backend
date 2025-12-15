@@ -629,9 +629,12 @@ export const getAllProductWithPerformance = catchAsync(
       console.log("🔍 Filtering products for seller:", req.user._id);
     }
 
-    // 🔍 search support - build query object
+    // 🔍 search support - use regex for exact/partial title match (more precise than text search)
     if (req.query.search) {
-      baseQuery.$text = { $search: req.query.search };
+      const searchTerm = req.query.search.trim();
+      // Use regex for case-insensitive partial match on title (more precise)
+      // This ensures "eggplant" only matches products with "eggplant" in the title
+      baseQuery.title = { $regex: searchTerm, $options: 'i' };
     }
 
     // 🔹 Category filter support

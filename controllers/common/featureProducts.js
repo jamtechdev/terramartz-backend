@@ -101,10 +101,29 @@ export const getFeatureProducts = catchAsync(async (req, res, next) => {
       },
     },
     { $unwind: "$details" },
+    {
+      $lookup: {
+        from: "categories",
+        localField: "details.category",
+        foreignField: "_id",
+        as: "categoryDetails",
+      },
+    },
+    { $unwind: { path: "$categoryDetails", preserveNullAndEmptyArrays: true } },
     { $match: buildMatchCondition({ "details.status": "active" }) },
     { $sort: { totalSales: -1, views: -1, "details.createdAt": -1 } },
     { $limit: 1 },
-    { $replaceRoot: { newRoot: { $mergeObjects: ["$details", "$$ROOT"] } } },
+    { 
+      $replaceRoot: { 
+        newRoot: { 
+          $mergeObjects: [
+            "$details", 
+            "$$ROOT",
+            { category: "$categoryDetails" }
+          ] 
+        } 
+      } 
+    },
   ]);
 
   let seller1 = null;
@@ -130,10 +149,29 @@ export const getFeatureProducts = catchAsync(async (req, res, next) => {
       },
     },
     { $unwind: "$details" },
+    {
+      $lookup: {
+        from: "categories",
+        localField: "details.category",
+        foreignField: "_id",
+        as: "categoryDetails",
+      },
+    },
+    { $unwind: { path: "$categoryDetails", preserveNullAndEmptyArrays: true } },
     { $match: buildMatchCondition({ "details.status": "active", _id: { $nin: usedProductIds } }) },
     { $sort: { rating: -1, totalQuantitySold: -1, "details.createdAt": -1 } },
     { $limit: 1 },
-    { $replaceRoot: { newRoot: { $mergeObjects: ["$details", "$$ROOT"] } } },
+    { 
+      $replaceRoot: { 
+        newRoot: { 
+          $mergeObjects: [
+            "$details", 
+            "$$ROOT",
+            { category: "$categoryDetails" }
+          ] 
+        } 
+      } 
+    },
   ]);
 
   let seller2 = null;
@@ -159,12 +197,12 @@ export const getFeatureProducts = catchAsync(async (req, res, next) => {
     const productQuery = sellerFilter.createdBy 
       ? { _id: latestAdmin.productId, createdBy: sellerFilter.createdBy, status: "active" }
       : { _id: latestAdmin.productId, status: "active" };
-    const product = await Product.findOne(productQuery).lean();
-    const performance = await ProductPerformance.findOne({
-      product: latestAdmin.productId,
-    });
-    let seller3 = null;
-    if (product) seller3 = await User.findById(product.createdBy).lean();
+      const product = await Product.findOne(productQuery).populate('category', 'name slug _id').lean();
+      const performance = await ProductPerformance.findOne({
+        product: latestAdmin.productId,
+      });
+      let seller3 = null;
+      if (product) seller3 = await User.findById(product.createdBy).lean();
     if (
       product &&
       product.status === "active" &&
@@ -192,10 +230,29 @@ export const getFeatureProducts = catchAsync(async (req, res, next) => {
         },
       },
       { $unwind: "$details" },
+      {
+        $lookup: {
+          from: "categories",
+          localField: "details.category",
+          foreignField: "_id",
+          as: "categoryDetails",
+        },
+      },
+      { $unwind: { path: "$categoryDetails", preserveNullAndEmptyArrays: true } },
       { $match: buildMatchCondition({ "details.status": "active", _id: { $nin: usedProductIds } }) },
       { $sort: { totalSales: -1, views: -1, "details.createdAt": -1 } },
       { $limit: 1 },
-      { $replaceRoot: { newRoot: { $mergeObjects: ["$details", "$$ROOT"] } } },
+      { 
+        $replaceRoot: { 
+          newRoot: { 
+            $mergeObjects: [
+              "$details", 
+              "$$ROOT",
+              { category: "$categoryDetails" }
+            ] 
+          } 
+        } 
+      },
     ]);
 
     let seller3Fallback = null;
@@ -225,7 +282,7 @@ export const getFeatureProducts = catchAsync(async (req, res, next) => {
       const productQuery = sellerFilter.createdBy 
         ? { _id: secondAdmin.productId, createdBy: sellerFilter.createdBy, status: "active" }
         : { _id: secondAdmin.productId, status: "active" };
-      const product = await Product.findOne(productQuery).lean();
+      const product = await Product.findOne(productQuery).populate('category', 'name slug _id').lean();
       const performance = await ProductPerformance.findOne({
         product: secondAdmin.productId,
       });
@@ -259,10 +316,29 @@ export const getFeatureProducts = catchAsync(async (req, res, next) => {
         },
       },
       { $unwind: "$details" },
+      {
+        $lookup: {
+          from: "categories",
+          localField: "details.category",
+          foreignField: "_id",
+          as: "categoryDetails",
+        },
+      },
+      { $unwind: { path: "$categoryDetails", preserveNullAndEmptyArrays: true } },
       { $match: buildMatchCondition({ "details.status": "active", _id: { $nin: usedProductIds } }) },
       { $sort: { rating: -1, totalQuantitySold: -1, "details.createdAt": -1 } },
       { $limit: 1 },
-      { $replaceRoot: { newRoot: { $mergeObjects: ["$details", "$$ROOT"] } } },
+      { 
+        $replaceRoot: { 
+          newRoot: { 
+            $mergeObjects: [
+              "$details", 
+              "$$ROOT",
+              { category: "$categoryDetails" }
+            ] 
+          } 
+        } 
+      },
     ]);
 
     let seller4Fallback = null;
