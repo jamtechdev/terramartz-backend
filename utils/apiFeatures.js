@@ -32,6 +32,8 @@ class APIFeatures {
   paginate() {
     let page = this.queryString.page * 1 || 1;
     let limit = this.queryString.limit * 1 || 100;
+    // Ensure limit is a positive number
+    if (limit <= 0) limit = 100;
     let skip = (page - 1) * limit;
     this.query = this.query.skip(skip).limit(limit);
     return this;

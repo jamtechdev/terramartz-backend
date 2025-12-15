@@ -634,6 +634,12 @@ export const getAllProductWithPerformance = catchAsync(
       baseQuery.$text = { $search: req.query.search };
     }
 
+    // 🔹 Category filter support
+    if (req.query.categoryId && req.query.categoryId !== 'null' && req.query.categoryId !== 'undefined') {
+      baseQuery.category = req.query.categoryId;
+      console.log("🔍 Filtering by categoryId:", req.query.categoryId);
+    }
+
     // 🔹 Get total count BEFORE creating the query chain
     const total = await Product.countDocuments(baseQuery);
     
@@ -642,12 +648,17 @@ export const getAllProductWithPerformance = catchAsync(
 
     const features = new APIFeatures(query, req.query).paginate();
 
-    // 🔹 Populate seller/shop info
-    let products = await features.query.populate({
-      path: "createdBy",
-      select:
-        "firstName middleName lastName profilePicture businessDetails sellerProfile",
-    });
+    // 🔹 Populate category and seller/shop info
+    let products = await features.query
+      .populate({
+        path: "category",
+        select: "_id name description image logo createdBy createdAt updatedAt slug",
+      })
+      .populate({
+        path: "createdBy",
+        select:
+          "firstName middleName lastName profilePicture businessDetails sellerProfile",
+      });
 
     // 🔹 Fetch all performances for these products in ONE query
     const productIds = products.map((p) => p._id);
@@ -700,6 +711,28 @@ export const getAllProductWithPerformance = catchAsync(
         };
       }
 
+      // 🔹 Format category with presigned URLs
+      let categoryData = null;
+      if (p.category) {
+        const categoryImageUrl = p.category.image
+          ? getDirectUrl(`categories/${p.category.image}`)
+          : null;
+        const categoryLogoUrl = p.category.logo
+          ? getDirectUrl(`categories/${p.category.logo}`)
+          : null;
+
+        categoryData = {
+          _id: p.category._id,
+          name: p.category.name,
+          description: p.category.description,
+          slug: p.category.slug,
+          image: categoryImageUrl,
+          logo: categoryLogoUrl,
+          createdAt: p.category.createdAt,
+          updatedAt: p.category.updatedAt,
+        };
+      }
+
       return {
         _id: p._id,
         title: p.title,
@@ -707,7 +740,7 @@ export const getAllProductWithPerformance = catchAsync(
         description: p.description,
         price: p.price,
         originalPrice: p.originalPrice,
-        category: p.category,
+        category: categoryData, // Properly formatted category object with _id, name, slug
         stockQuantity: p.stockQuantity,
         productImages,
         tags: p.tags || [],
