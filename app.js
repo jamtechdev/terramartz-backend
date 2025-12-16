@@ -31,6 +31,7 @@ import notificationRoutes from "./routes/common/notificationRoutes.js";
 import customersWishlistRoutes from "./routes/customers/wishlistRoutes.js";
 import customersDashboardRoutes from "./routes/customers/dashboardRoutes.js";
 import sellerStoreDetailRoutes from "./routes/seller/sellerStoreDetailRoutes.js";
+import stripeConnectRoutes from "./routes/sellers/stripeConnectRoutes.js";
 import userLatestRoutes from "./routes/customers/usersRoutes.js";
 // new api design part
 import customersCategoriesRoutes from "./routes/customers/categoriesRoutes.js";
@@ -124,6 +125,7 @@ app.use("/api/notifications", notificationRoutes);
 app.use("/api/faqs", faqRoutes);
 app.use("/api/farms", farmsRouter);
 app.use("/api/seller", salesRoutes);
+app.use("/api/seller/stripe-connect", stripeConnectRoutes);
 
 app.use("/api/admin", adminRoutes);
 

@@ -137,12 +137,18 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
   const totalAmount =
     Math.round((totalAfterDiscount + shippingCost + taxAmount) * 100) / 100;
 
-  // ✅ Step 10: Create Stripe PaymentIntent
-  const paymentIntent = await stripe.paymentIntents.create({
+  // ✅ Step 10: Check if seller has connected Stripe account
+  const hasStripeConnect =
+    seller.sellerProfile?.stripeAccountId &&
+    seller.sellerProfile?.stripeAccountStatus === "active";
+
+  // ✅ Step 11: Create Stripe PaymentIntent
+  const paymentIntentConfig = {
     amount: Math.round(totalAmount * 100),
     currency: "usd",
     metadata: {
       buyer: req.user.id,
+      sellerId: sellerId,
       products: JSON.stringify(
         productDetailsArr.map((p) => ({
           product: p.product._id,
@@ -155,8 +161,20 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
       adminDiscount,
       taxAmount,
       shippingCost,
+      paymentType: hasStripeConnect ? "direct_charge" : "platform", // Track payment type
     },
-  });
+  };
+
+  // If seller has connected Stripe account, use Direct Charge
+  if (hasStripeConnect) {
+    paymentIntentConfig.transfer_data = {
+      destination: seller.sellerProfile.stripeAccountId,
+    };
+    // Platform fee = 0 for now (can be added later)
+    // paymentIntentConfig.application_fee_amount = 0;
+  }
+
+  const paymentIntent = await stripe.paymentIntents.create(paymentIntentConfig);
 
   // 🔹 Local Development: Skip webhook and directly create purchase
   const isDevelopment = process.env.NODE_ENV === "development";
@@ -249,6 +267,20 @@ export const webhookPayment = async (req, res, next) => {
       await createPurchaseFromPaymentIntent(event.data.object);
     } catch (err) {
       console.error("⚠️ Failed to save purchase:", err);
+    }
+  }
+
+  // Handle Stripe Connect Account Updates
+  if (event.type === "account.updated") {
+    try {
+      const account = event.data.object;
+      const { updateAccountStatus } = await import(
+        "../sellers/stripeConnectController.js"
+      );
+      await updateAccountStatus(account.id, account);
+      console.log("✅ Account status updated:", account.id);
+    } catch (err) {
+      console.error("⚠️ Failed to update account status:", err);
     }
   }
 

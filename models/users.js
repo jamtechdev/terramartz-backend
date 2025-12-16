@@ -189,6 +189,26 @@ const userSchema = new mongoose.Schema(
           },
         },
       ],
+      // Stripe Connect fields
+      stripeAccountId: {
+        type: String,
+        trim: true,
+        default: null,
+      },
+      stripeAccountStatus: {
+        type: String,
+        enum: ["pending", "active", "restricted", null],
+        default: null,
+      },
+      stripeOnboardingComplete: {
+        type: Boolean,
+        default: false,
+      },
+      stripeAccountType: {
+        type: String,
+        enum: ["express", null],
+        default: null,
+      },
     },
     socialLogin: {
       googleId: {

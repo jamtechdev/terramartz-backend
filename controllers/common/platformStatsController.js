@@ -1,6 +1,7 @@
 import { User } from "../../models/users.js";
 import { Purchase } from "../../models/customers/purchase.js";
 import { Review } from "../../models/common/review.js";
+import { Product } from "../../models/seller/product.js";
 import catchAsync from "../../utils/catchasync.js";
 
 // Public stats for Seller Portal / marketing pages
@@ -9,8 +10,9 @@ export const getSellerPortalStats = catchAsync(async (req, res, next) => {
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
   // Run aggregates in parallel for performance
-  const [activeFarmers, monthlyOrders, ratingAgg] = await Promise.all([
+  const [activeFarmers, totalProducts, monthlyOrders, ratingAgg] = await Promise.all([
     User.countDocuments({ role: "seller" }),
+    Product.countDocuments({ status: "active" }), // Count only active products
     Purchase.countDocuments({
       createdAt: { $gte: startOfMonth, $lte: now },
     }),
@@ -26,6 +28,7 @@ export const getSellerPortalStats = catchAsync(async (req, res, next) => {
     status: "success",
     stats: {
       activeFarmers: activeFarmers || 0,
+      totalProducts: totalProducts || 0,
       monthlyOrders: monthlyOrders || 0,
       averageRating: Number(avgRating.toFixed(1)),
       payoutTimeHours: 24, // keep as config value for now
