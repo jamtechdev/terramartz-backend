@@ -40,7 +40,7 @@ import platformStatsRoutes from "./routes/common/platformStatsRoutes.js";
 import adminCategoriesRoutes from "./routes/admin/adminCategoriesRoutes.js";
 import adminPurchaseRoutes from "./routes/admin/adminPurchaseRoutes.js";
 import adminUserRoutes from "./routes/admin/adminUserRoutes.js";
-import adminAuthRoutes from "./routes/admin/adminAuthRoutes.js"
+import adminAuthRoutes from "./routes/admin/adminAuthRoutes.js";
 // =====================
 // __dirname setup
 // =====================
@@ -62,7 +62,7 @@ const app = express();
 app.use(
   "/stripe/webhook",
   express.raw({ type: "application/json" }),
-  stripeController.webhookPayment
+  stripeController.webhookPayment,
 );
 
 // Views & Static
@@ -74,8 +74,8 @@ app.use(express.static(path.join(__dirname, "public")));
 app.use(cookieParser());
 
 // Increase body size limits for file uploads
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
 // CORS configuration - explicitly allow frontend origin
 app.use(
@@ -83,32 +83,32 @@ app.use(
     origin: function (origin, callback) {
       // Allow requests with no origin (like mobile apps, Postman, etc.)
       if (!origin) return callback(null, true);
-      
+
       // List of allowed origins
       const allowedOrigins = [
-        'http://35.168.8.254.nip.io',
-        'https://35.168.8.254.nip.io',
-        'http://localhost:3000',
-        'http://localhost:3001',
-        'http://127.0.0.1:3000',
+        "http://35.168.8.254.nip.io",
+        "https://35.168.8.254.nip.io",
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3000",
       ];
-      
+
       // Check if origin is allowed
       if (allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
         // For development, allow all origins
-        if (process.env.NODE_ENV !== 'production') {
+        if (process.env.NODE_ENV !== "production") {
           callback(null, true);
         } else {
-          callback(new Error('Not allowed by CORS'));
+          callback(new Error("Not allowed by CORS"));
         }
       }
     },
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  })
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  }),
 );
 
 // =====================
@@ -130,8 +130,6 @@ app.use("/api/farms", farmsRouter);
 app.use("/api/seller", salesRoutes);
 app.use("/api/seller/stripe-connect", stripeConnectRoutes);
 
-app.use("/api/admin", adminRoutes);
-
 // new api design
 app.use("/api/terramartz/users", userLatestRoutes);
 app.use("/api/terramartz/categories", customersCategoriesRoutes);
@@ -140,11 +138,13 @@ app.use("/api/terramartz/wishlist", customersWishlistRoutes);
 app.use("/api/terramartz/customer", customersDashboardRoutes);
 app.use("/api/terramartz/sellers", sellerStoreDetailRoutes);
 app.use("/api/stats", platformStatsRoutes);
-app.use("/api/admin/categories", adminCategoriesRoutes);
-app.use("/api/admin/user-transactions",adminPurchaseRoutes );
-app.use("/api/admin/users",adminUserRoutes );
-app.use("/api/admin/login",adminAuthRoutes );
 
+//admin routes
+app.use("/api/admin/auth", adminAuthRoutes);
+app.use("/api/admin", adminRoutes);
+app.use("/api/admin/categories", adminCategoriesRoutes);
+app.use("/api/admin/user-transactions", adminPurchaseRoutes);
+app.use("/api/admin/users", adminUserRoutes);
 
 // =====================
 // Swagger UI
@@ -157,7 +157,7 @@ try {
   swaggerFile = JSON.parse(fs.readFileSync(swaggerFilePath, "utf8"));
 } catch (err) {
   console.warn(
-    "⚠️ swagger_output.json not found. Make sure you run 'node swagger.js' locally and commit the file."
+    "⚠️ swagger_output.json not found. Make sure you run 'node swagger.js' locally and commit the file.",
   );
 }
 

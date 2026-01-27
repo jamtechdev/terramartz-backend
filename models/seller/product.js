@@ -79,7 +79,20 @@ const productSchema = new mongoose.Schema(
     discountExpires: { type: Date },
     delivery: { type: String, default: "today" },
   },
-  { timestamps: true }
+  {
+    adminApproved: {
+      type: Boolean,
+      default: false,
+    },
+  },
+  {
+    approvedBy: {
+      type: String, // User ID (buyer or seller)
+      ref: "Admin",
+      index: true,
+    },
+  },
+  { timestamps: true },
 );
 // 🔹 Pre-save hook for globally unique slug
 productSchema.pre("save", async function (next) {

@@ -9,8 +9,7 @@ import { upload } from "../../middleware/admin/upload.js";
 
 // 🔐 ADMIN
 router.get("/",
-     protectAdmin, 
-   
+      protectAdmin('Orders', 'View'), 
      adminCategoryController.getAllCategories);
 router.post("/",
      protectAdmin,

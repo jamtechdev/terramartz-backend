@@ -942,6 +942,29 @@ export const getSellerProductsWithPerformance = catchAsync(
     });
   }
 );
+
+
+export const updateProductApprovalStatus = catchAsync(
+  async (req, res, next) => {
+    const userId = req.user._id;
+    const productId = req.params.productId;
+
+    const product = await Product.findById(productId);
+
+    if (!product) return next(new AppError("Product not found", 404));
+
+    product.adminApproved = !product.adminApproved;
+    product.approvedBy = userId;
+
+    await product.save();
+
+    res.status(200).json({
+      status: "success",
+      product: product,
+    });
+  },
+);
+
 // export const getSellerProductsWithPerformance = catchAsync(
 //   async (req, res, next) => {
 //     const sellerId = req.user._id;
