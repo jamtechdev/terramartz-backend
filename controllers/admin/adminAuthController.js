@@ -28,7 +28,6 @@ export const adminLogin = catchAsync(async (req, res, next) => {
   }
 
   const isMatch = await bcrypt.compare(password, user.password);
-  console.log(password, "isMatch==>");
 
   if (!isMatch) {
     return next(new AppError("Invalid credentials", 401));
@@ -48,7 +47,7 @@ export const adminLogin = catchAsync(async (req, res, next) => {
         _id: user._id,
         name: user.name,
         email: user.email,
-        phoneNumber: user.phoneNumber,
+        phoneNumber: Number.parseInt(user.phoneNumber),
         role: user.role,
         isActive: user.isActive,
         permissions: user.permissions,
