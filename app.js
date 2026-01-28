@@ -41,6 +41,7 @@ import adminCategoriesRoutes from "./routes/admin/adminCategoriesRoutes.js";
 import adminPurchaseRoutes from "./routes/admin/adminPurchaseRoutes.js";
 import adminUserRoutes from "./routes/admin/adminUserRoutes.js";
 import adminAuthRoutes from "./routes/admin/adminAuthRoutes.js";
+import adminProductRoutes from "./routes/admin/adminProductRoutes.js";
 // =====================
 // __dirname setup
 // =====================
@@ -145,6 +146,7 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/admin/categories", adminCategoriesRoutes);
 app.use("/api/admin/user-transactions", adminPurchaseRoutes);
 app.use("/api/admin/users", adminUserRoutes);
+app.use("/api/admin/products", adminProductRoutes);
 
 // =====================
 // Swagger UI

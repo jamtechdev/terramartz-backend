@@ -131,3 +131,299 @@ export const getAllUsers = catchAsync(async (req, res) => {
 //   🔹 4. Search buyers (multi-word name)
 //   curl -X GET "http://localhost:7345/api/admin/users?search=Blake+Bin" \
 //   -H "Content-Type: application/json"
+
+// ==========================
+// GET SINGLE USER BY ID
+// ==========================
+export const getUserById = catchAsync(async (req, res, next) => {
+  const { id } = req.params;
+
+  const user = await User.findById(id)
+    .select(
+      `
+      firstName
+      middleName
+      lastName
+      email
+      phoneNumber
+      status
+      role
+      accountType
+      profilePicture
+      createdAt
+      updatedAt
+      isAccountVerified
+      sellerProfile
+      businessDetails
+      socialLogin
+      provider
+      termsAccepted
+      receiveMarketingEmails
+      bio
+      emailNotifications
+      pushNotifications
+      marketingEmails
+      notificationFrequency
+      language
+      currency
+      defaultAddress
+      twoFactorEnabled
+      twoFactorMethod
+      `
+    )
+    .lean();
+
+  if (!user) {
+    return next(new AppError("User not found", 404));
+  }
+
+  // Format the response
+  const fullName = [user.firstName, user.middleName, user.lastName]
+    .filter(Boolean)
+    .join(" ");
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      _id: user._id,
+      name: fullName || user.email,
+      email: user.email,
+      phoneNumber: user.phoneNumber,
+      status: user.status,
+      role: user.role,
+      accountType: user.accountType,
+      profilePicture: user.profilePicture,
+      isAccountVerified: user.isAccountVerified,
+      sellerProfile: user.sellerProfile,
+      businessDetails: user.businessDetails,
+      socialLogin: user.socialLogin,
+      provider: user.provider,
+      termsAccepted: user.termsAccepted,
+      receiveMarketingEmails: user.receiveMarketingEmails,
+      bio: user.bio,
+      emailNotifications: user.emailNotifications,
+      pushNotifications: user.pushNotifications,
+      marketingEmails: user.marketingEmails,
+      notificationFrequency: user.notificationFrequency,
+      language: user.language,
+      currency: user.currency,
+      defaultAddress: user.defaultAddress,
+      twoFactorEnabled: user.twoFactorEnabled,
+      twoFactorMethod: user.twoFactorMethod,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    },
+  });
+});
+
+// ==========================
+// UPDATE USER STATUS
+// ==========================
+export const updateUserStatus = catchAsync(async (req, res, next) => {
+  const { id } = req.params;
+  const { status } = req.body;
+
+  // Validate status
+  const validStatuses = ["online", "offline"];
+  if (!validStatuses.includes(status)) {
+    return next(
+      new AppError(
+        `Invalid status. Valid statuses are: ${validStatuses.join(", ")}`,
+        400
+      )
+    );
+  }
+
+  const user = await User.findById(id);
+  if (!user) {
+    return next(new AppError("User not found", 404));
+  }
+
+  const updatedUser = await User.findByIdAndUpdate(
+    id,
+    { status },
+    { new: true, runValidators: true }
+  ).select(
+    "firstName middleName lastName email phoneNumber status role createdAt updatedAt"
+  );
+
+  const fullName = [updatedUser.firstName, updatedUser.middleName, updatedUser.lastName]
+    .filter(Boolean)
+    .join(" ");
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      _id: updatedUser._id,
+      name: fullName || updatedUser.email,
+      email: updatedUser.email,
+      phoneNumber: updatedUser.phoneNumber,
+      status: updatedUser.status,
+      role: updatedUser.role,
+      updatedAt: updatedUser.updatedAt,
+    },
+  });
+});
+
+// ==========================
+// UPDATE USER ROLE
+// ==========================
+export const updateUserRole = catchAsync(async (req, res, next) => {
+  const { id } = req.params;
+  const { role } = req.body;
+
+  // Validate role
+  const validRoles = ["user", "seller"];
+  if (!validRoles.includes(role)) {
+    return next(
+      new AppError(
+        `Invalid role. Valid roles are: ${validRoles.join(", ")}`,
+        400
+      )
+    );
+  }
+
+  const user = await User.findById(id);
+  if (!user) {
+    return next(new AppError("User not found", 404));
+  }
+
+  // If changing to seller, ensure account type is business
+  // if (role === "seller" && user.accountType !== "business") {
+  //   return next(
+  //     new AppError(
+  //       "User must have a business account type to become a seller",
+  //       400
+  //     )
+  //   );
+  // }
+
+  const updatedUser = await User.findByIdAndUpdate(
+    id,
+    { role },
+    { new: true, runValidators: true }
+  ).select(
+    "firstName middleName lastName email phoneNumber status role accountType createdAt updatedAt"
+  );
+
+  const fullName = [updatedUser.firstName, updatedUser.middleName, updatedUser.lastName]
+    .filter(Boolean)
+    .join(" ");
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      _id: updatedUser._id,
+      name: fullName || updatedUser.email,
+      email: updatedUser.email,
+      phoneNumber: updatedUser.phoneNumber,
+      status: updatedUser.status,
+      role: updatedUser.role,
+      accountType: updatedUser.accountType,
+      updatedAt: updatedUser.updatedAt,
+    },
+  });
+});
+
+// ==========================
+// UPDATE USER DETAILS
+// ==========================
+export const updateUserDetails = catchAsync(async (req, res, next) => {
+  const { id } = req.params;
+  const updateData = req.body;
+
+  // Fields that can be updated
+  const allowedFields = [
+    "firstName",
+    "middleName",
+    "lastName",
+    "phoneNumber",
+    "bio",
+    "emailNotifications",
+    "pushNotifications",
+    "marketingEmails",
+    "notificationFrequency",
+    "language",
+    "currency",
+    "defaultAddress",
+  ];
+
+  // Filter out non-allowed fields
+  const filteredData = {};
+  Object.keys(updateData).forEach((key) => {
+    if (allowedFields.includes(key)) {
+      filteredData[key] = updateData[key];
+    }
+  });
+
+  if (Object.keys(filteredData).length === 0) {
+    return next(
+      new AppError(
+        "No valid fields to update. Allowed fields: " + allowedFields.join(", "),
+        400
+      )
+    );
+  }
+
+  const user = await User.findById(id);
+  if (!user) {
+    return next(new AppError("User not found", 404));
+  }
+
+  const updatedUser = await User.findByIdAndUpdate(
+    id,
+    filteredData,
+    { new: true, runValidators: true }
+  ).select(
+    "firstName middleName lastName email phoneNumber status role bio emailNotifications pushNotifications marketingEmails notificationFrequency language currency defaultAddress createdAt updatedAt"
+  );
+
+  const fullName = [updatedUser.firstName, updatedUser.middleName, updatedUser.lastName]
+    .filter(Boolean)
+    .join(" ");
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      _id: updatedUser._id,
+      name: fullName || updatedUser.email,
+      email: updatedUser.email,
+      phoneNumber: updatedUser.phoneNumber,
+      status: updatedUser.status,
+      role: updatedUser.role,
+      bio: updatedUser.bio,
+      emailNotifications: updatedUser.emailNotifications,
+      pushNotifications: updatedUser.pushNotifications,
+      marketingEmails: updatedUser.marketingEmails,
+      notificationFrequency: updatedUser.notificationFrequency,
+      language: updatedUser.language,
+      currency: updatedUser.currency,
+      defaultAddress: updatedUser.defaultAddress,
+      updatedAt: updatedUser.updatedAt,
+    },
+  });
+});
+
+// ==========================
+// DELETE USER (SOFT DELETE)
+// ==========================
+export const deleteUser = catchAsync(async (req, res, next) => {
+  const { id } = req.params;
+
+  const user = await User.findById(id);
+  if (!user) {
+    return next(new AppError("User not found", 404));
+  }
+
+  // Soft delete by setting status to 'offline' and marking as deleted
+  await User.findByIdAndUpdate(id, {
+    status: "offline",
+    email: `deleted_${Date.now()}_${user.email}`,
+    phoneNumber: null,
+  });
+
+  res.status(200).json({
+    status: "success",
+    message: "User deleted successfully",
+  });
+});
