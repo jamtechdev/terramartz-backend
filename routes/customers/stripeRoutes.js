@@ -12,6 +12,20 @@ router.post("/create-payment-intent", stripeController.createPaymentIntent);
 router.post("/create-checkout-session", stripeController.createCheckoutSession);
 
 // create order immediately after payment (called from frontend)
-router.post("/create-order-immediately", stripeController.createOrderImmediately);
+router.post(
+  "/create-order-immediately",
+  stripeController.createOrderImmediately,
+);
+
+router.post("/refund", stripeController.createRefund);
+
+// Get dispute details for an order
+router.get("/dispute/:orderId", stripeController.getDisputeDetails);
+
+// Submit evidence for a dispute (Seller only)
+router.post(
+  "/dispute/:orderId/evidence",
+  stripeController.submitDisputeEvidence,
+);
 
 export default router;

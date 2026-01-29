@@ -66,7 +66,17 @@ const purchaseSchema = new mongoose.Schema(
     totalAmount: { type: Number, required: true },
     paymentStatus: {
       type: String,
-      enum: ["pending", "paid", "failed"],
+      enum: [
+        "pending",
+        "paid",
+        "failed",
+        "pending",
+        "paid",
+        "failed",
+        "refunded",
+        "partially_refunded",
+        "disputed",
+      ],
       default: "pending",
     },
     paymentIntentId: {
@@ -92,6 +102,12 @@ const purchaseSchema = new mongoose.Schema(
         "in_transit",
         "delivered",
         "cancelled",
+        "new",
+        "processing",
+        "shipped",
+        "delivered",
+        "cancelled",
+        "refunded",
       ],
       default: "new",
     },
@@ -118,8 +134,52 @@ const purchaseSchema = new mongoose.Schema(
         location: String,
       },
     ],
+    refundAmount: {
+      type: Number,
+      default: 0,
+    },
+    refundedAt: {
+      type: Date,
+    },
+
+    disputeId: {
+      type: String,
+      default: null,
+    },
+    disputeStatus: {
+      type: String,
+      enum: ["none", "under_review", "won", "lost", "warning_closed"],
+      default: "none",
+    },
+    disputeReason: {
+      type: String,
+    },
+    disputeAmount: {
+      type: Number,
+      default: 0,
+    },
+    disputeCreatedAt: {
+      type: Date,
+    },
+    disputeClosedAt: {
+      type: Date,
+    },
+
+    // 🔹 UPDATE your existing status enum to include refunded:
+    status: {
+      type: String,
+      enum: [
+        "new",
+        "processing",
+        "shipped",
+        "delivered",
+        "cancelled",
+        "refunded",
+      ],
+      default: "new",
+    },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 export const Purchase = mongoose.model("Purchase", purchaseSchema);
