@@ -22,7 +22,23 @@ const promoCodeSchema = new mongoose.Schema(
       default: true,
     },
     sellerId: { type: String, ref: "User", required: true, index: true },
+    usageLimit: {  // Maximum total uses
+      type: Number,
+      default: null,  // null = unlimited
+    },
+    perUserLimit: {  // Maximum uses per user
+      type: Number,
+      default: 1,  // Default: each user can use once
+    },
+    usedCount: {  // Total times used
+      type: Number,
+      default: 0,
+    },
   },
   { timestamps: true },
 );
+
+// Add indexes for better performance
+promoCodeSchema.index({ code: 1, sellerId: 1 }, { unique: true });
+promoCodeSchema.index({ isActive: 1, expiresAt: 1 });
 export const PromoCode = mongoose.model("PromoCode", promoCodeSchema);

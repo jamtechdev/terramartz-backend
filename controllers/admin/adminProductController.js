@@ -238,17 +238,19 @@ export const getProductById = catchAsync(async (req, res, next) => {
 // ==========================
 export const updateProductApproval = catchAsync(async (req, res, next) => {
   const { id } = req.params;
-  const { adminApproved } = req.body;
 
   const product = await Product.findById(id);
   if (!product) {
     return next(new AppError("Product not found", 404));
   }
 
+  // Toggle the adminApproved status
+  const newApprovalStatus = !product.adminApproved;
+
   const updatedProduct = await Product.findByIdAndUpdate(
     id,
     { 
-      adminApproved,
+      adminApproved: newApprovalStatus,
       approvedBy: req.user ? req.user._id : null // Assign admin user ID if available
     },
     { new: true, runValidators: true }

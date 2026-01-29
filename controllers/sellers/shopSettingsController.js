@@ -6,6 +6,7 @@ import {
   getDirectUrl,
 } from "../../utils/awsS3.js";
 import { User } from "../../models/users.js";
+import { PromoCode } from "../../models/seller/promoCodes.js";
 import { Farm } from "../../models/seller/farm.js";
 import { Product } from "../../models/seller/product.js";
 
@@ -99,7 +100,40 @@ export const updateShopSettings = catchAsync(async (req, res, next) => {
       if (freeShippingThreshold !== undefined)
         otherProfileFields.freeShippingThreshold = freeShippingThreshold;
 
-      if (promoCodes !== undefined) otherProfileFields.promoCodes = promoCodes;
+      // if (promoCodes !== undefined) otherProfileFields.promoCodes = promoCodes;
+
+      if (promoCodes !== undefined) {
+        console.log(`⚠️ WARNING: Promo codes should be managed via /api/seller/promo-codes endpoint`);
+        console.log(`🔄 Converting embedded promo codes to new PromoCode model for seller: ${req.user.id}`);
+        
+        // Convert embedded promo codes to new PromoCode model entries
+        try {
+          const promoCodeDocs = promoCodes.map(promo => ({
+            code: promo.code,
+            discount: promo.discount,
+            expiresAt: promo.expiresAt,
+            minOrderAmount: promo.minOrderAmount || 0,
+            type: promo.type || "fixed",
+            isActive: promo.isActive !== undefined ? promo.isActive : true,
+            usageLimit: promo.usageLimit || null,
+            perUserLimit: promo.perUserLimit || 1,
+            sellerId: req.user.id.toString(), // Ensure proper seller association
+            usedCount: 0
+          }));
+          
+          // Create new promo codes in the PromoCode collection
+          if (promoCodeDocs.length > 0) {
+            await PromoCode.insertMany(promoCodeDocs);
+            console.log(`✅ Successfully migrated ${promoCodeDocs.length} promo codes to new model`);
+          }
+        } catch (error) {
+          console.error("❌ Error migrating promo codes to new model:", error);
+          // Don't fail the entire request if promo migration fails
+        }
+      }
+
+
+
 
       if (otherProfileFields.shopName) {
         if (!seller.businessDetails) seller.businessDetails = {};
@@ -191,6 +225,12 @@ export const updateShopSettings = catchAsync(async (req, res, next) => {
       );
     }
 
+    // 🔹 Get promo codes from new model for response
+    const promoCodesResponse = await PromoCode.find({ 
+      sellerId: req.user.id.toString(),
+      isActive: true 
+    }).select("code discount type expiresAt minOrderAmount usageLimit perUserLimit usedCount");
+
     // 🔹 Response same as before
     return res.status(200).json({
       status: "success",
@@ -201,6 +241,7 @@ export const updateShopSettings = catchAsync(async (req, res, next) => {
       businessDetails: seller.businessDetails,
       profilePicture: profilePictureUrl,
       farm,
+      promoCodes: promoCodesResponse,
     });
   } catch (err) {
     await session.abortTransaction();

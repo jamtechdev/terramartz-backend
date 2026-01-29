@@ -7,6 +7,8 @@ import { Purchase } from "../../models/customers/purchase.js";
 import { User } from "../../models/users.js";
 import { TaxConfig } from "../../models/super-admin/taxWithAdminDiscountConfig.js";
 import { ProductPerformance } from "../../models/seller/productPerformance.js";
+import { PromoCode } from "../../models/seller/promoCodes.js";
+import { CustomerPromoCodeUse } from "../../models/customers/customerPromoCodeUse.js";
 import catchAsync from "../../utils/catchasync.js";
 import AppError from "../../utils/apperror.js";
 import { LoyaltyPoint } from "./../../models/customers/loyaltyPoints.js";
@@ -75,22 +77,64 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
   )
     shippingCost = 0;
 
-  // 💡 Step 4: Promo code discount
+  // 💡 Step 4: Promo code discount (using new PromoCode model)
   let promoDiscount = 0;
+  let promoCodeId = null;
+  
   if (promoCode) {
-    const matchedPromo = seller.sellerProfile.promoCodes.find(
-      (p) => p.code === promoCode
-    );
-    if (matchedPromo) {
-      const now = new Date();
-      const notExpired =
-        !matchedPromo.expiresAt || new Date(matchedPromo.expiresAt) >= now;
-      if (notExpired && subtotal >= (matchedPromo.minOrderAmount || 0)) {
-        promoDiscount =
-          matchedPromo.type === "fixed"
-            ? matchedPromo.discount
-            : (subtotal * matchedPromo.discount) / 100;
+    try {
+      // Find promo code in the new PromoCode collection
+      const matchedPromo = await PromoCode.findOne({
+        code: promoCode,
+        sellerId: sellerId,
+        isActive: true
+      });
+      
+      if (matchedPromo) {
+        const now = new Date();
+        
+        // Check expiration
+        const notExpired = !matchedPromo.expiresAt || new Date(matchedPromo.expiresAt) >= now;
+        
+        // Check minimum order amount
+        const meetsMinAmount = subtotal >= (matchedPromo.minOrderAmount || 0);
+        
+        // Check total usage limit
+        const withinUsageLimit = !matchedPromo.usageLimit || matchedPromo.usedCount < matchedPromo.usageLimit;
+        
+        // Check per-user limit (if user is authenticated)
+        let withinUserLimit = true;
+        if (req.user && req.user.id) {
+          const userUsageCount = await CustomerPromoCodeUse.countDocuments({
+            user_id: req.user.id,
+            promoCodeId: matchedPromo._id
+          });
+          withinUserLimit = userUsageCount < (matchedPromo.perUserLimit || 1);
+        }
+        
+        if (notExpired && meetsMinAmount && withinUsageLimit && withinUserLimit) {
+          // Calculate discount
+          promoDiscount =
+            matchedPromo.type === "fixed"
+              ? matchedPromo.discount
+              : (subtotal * matchedPromo.discount) / 100;
+          
+          promoCodeId = matchedPromo._id;
+          
+          console.log(`✅ Valid promo code applied: ${promoCode}, Discount: $${promoDiscount.toFixed(2)}`);
+        } else {
+          console.log(`⚠️ Promo code validation failed:`);
+          console.log(`   - Expired: ${!notExpired}`);
+          console.log(`   - Min amount met: ${meetsMinAmount}`);
+          console.log(`   - Within usage limit: ${withinUsageLimit}`);
+          console.log(`   - Within user limit: ${withinUserLimit}`);
+        }
+      } else {
+        console.log(`⚠️ Promo code not found or inactive: ${promoCode}`);
       }
+    } catch (error) {
+      console.error("❌ Error validating promo code:", error);
+      // Continue without promo code if validation fails
     }
   }
 
@@ -162,6 +206,7 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
       taxAmount,
       shippingCost,
       paymentType: hasStripeConnect ? "direct_charge" : "platform", // Track payment type
+      promoCodeId: promoCodeId || null, // Add promo code ID for tracking
     },
   };
 
@@ -381,6 +426,32 @@ export const webhookPayment = async (req, res, next) => {
         console.error("⚠️ Failed to clear cart:", cartError);
         // Don't fail the order if cart clearing fails
       }
+      
+      // Record promo code usage if applicable
+      const sessionMetadata = session.metadata || {};
+      const usedPromoCodeId = sessionMetadata.promoCodeId;
+      
+      if (usedPromoCodeId && buyer) {
+        try {
+          // Record the promo code usage
+          await CustomerPromoCodeUse.create({
+            user_id: buyer,
+            promoCodeId: usedPromoCodeId,
+            purchase_id: order._id
+          });
+          
+          // Update promo code usage count
+          await PromoCode.findByIdAndUpdate(
+            usedPromoCodeId,
+            { $inc: { usedCount: 1 } }
+          );
+          
+          console.log(`✅ Promo code usage recorded in webhook: User ${buyer} used promo ${usedPromoCodeId}`);
+        } catch (promoError) {
+          console.error("⚠️ Failed to record promo code usage in webhook:", promoError);
+          // Don't fail the order if promo code tracking fails
+        }
+      }
 
       console.log("✅ Purchase created from checkout session:", orderId);
     } catch (err) {
@@ -411,7 +482,12 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
   let sellerId = null;
   const lineItems = [];
 
-  // 💡 Step 1: Fetch products & build line items
+  // Initialize promo code variables
+  let promoDiscount = 0;
+  let promoCodeId = null;
+
+  // 💡 Step 1: Fetch products & collect for later processing
+  const productDataList = [];
   for (const item of products) {
     const product = await Product.findById(item.product);
     if (!product) return next(new AppError("Product not found", 404));
@@ -449,6 +525,104 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
       basePrice = Number(product.price) || 0;
     }
 
+    productDataList.push({
+      product,
+      basePrice,
+      quantity: item.quantity,
+      originalItem: item
+    });
+  }
+
+  // Calculate subtotal for promo code validation
+  const productsSubtotal = productDataList.reduce(
+    (sum, pData) => sum + pData.basePrice * pData.quantity,
+    0
+  );
+
+  const seller = await User.findById(sellerId);
+  if (!seller) return next(new AppError("Seller not found", 404));
+
+  // 💡 Promo code validation (using new PromoCode model) - added after sellerId and subtotal are established
+  // Variables promoDiscount and promoCodeId already declared earlier in function
+  
+  if (promoCode && sellerId) {  // Only validate if we have a seller
+    try {
+      // Find promo code in the new PromoCode collection
+      const matchedPromo = await PromoCode.findOne({
+        code: promoCode,
+        sellerId: sellerId,  // Match promo code to seller
+        isActive: true
+      });
+      
+      if (matchedPromo) {
+        const now = new Date();
+        
+        // Check expiration
+        const notExpired = !matchedPromo.expiresAt || new Date(matchedPromo.expiresAt) >= now;
+        
+        // Check total usage limit
+        const withinUsageLimit = !matchedPromo.usageLimit || matchedPromo.usedCount < matchedPromo.usageLimit;
+        
+        // Check per-user limit (if user is authenticated)
+        let withinUserLimit = true;
+        if (req.user && req.user.id) {
+          const userUsageCount = await CustomerPromoCodeUse.countDocuments({
+            user_id: req.user.id,
+            promoCodeId: matchedPromo._id
+          });
+          withinUserLimit = userUsageCount < (matchedPromo.perUserLimit || 1);
+        }
+        
+        // Check minimum order amount
+        const meetsMinAmount = productsSubtotal >= (matchedPromo.minOrderAmount || 0);
+        
+        if (notExpired && withinUsageLimit && withinUserLimit && meetsMinAmount) {
+          // Calculate the actual discount based on subtotal
+          promoDiscount =
+            matchedPromo.type === "fixed"
+              ? matchedPromo.discount
+              : (productsSubtotal * matchedPromo.discount) / 100;
+          
+          promoCodeId = matchedPromo._id;
+          console.log(`✅ Valid promo code applied: ${promoCode}, Discount: $${promoDiscount.toFixed(2)}`);
+        } else {
+          console.log(`⚠️ Promo code validation failed:`);
+          console.log(`   - Expired: ${!notExpired}`);
+          console.log(`   - Within usage limit: ${withinUsageLimit}`);
+          console.log(`   - Within user limit: ${withinUserLimit}`);
+          console.log(`   - Meets minimum amount: ${meetsMinAmount}`);
+          if (!meetsMinAmount) {
+            console.log(`   - Subtotal: $${productsSubtotal}, Min required: $${matchedPromo.minOrderAmount || 0}`);
+          }
+        }
+      } else {
+        console.log(`⚠️ Promo code not found or inactive for seller: ${promoCode}`);
+      }
+    } catch (error) {
+      console.error("❌ Error validating promo code:", error);
+      // Continue without promo code if validation fails
+    }
+  }
+
+  // 💡 Step 2: Apply proportional discount to each product and build line items
+  const totalBasePrice = productDataList.reduce(
+    (sum, pData) => sum + pData.basePrice * pData.quantity,
+    0
+  );
+
+  // Apply proportional discount to each product and build line items
+  for (const pData of productDataList) {
+    const { product, basePrice, quantity, originalItem } = pData;
+    
+    // Calculate proportional discount for this product
+    let finalUnitPrice = basePrice;
+    if (promoDiscount > 0 && totalBasePrice > 0) {
+      const proportion = (basePrice * quantity) / totalBasePrice;
+      const discountShare = promoDiscount * proportion;
+      finalUnitPrice = basePrice - discountShare / quantity;
+      finalUnitPrice = Math.max(0, Math.round(finalUnitPrice * 100) / 100); // 2 decimals, ensure non-negative
+    }
+    
     // Ensure product name is not empty (Stripe requirement)
     const productName = (product.name && typeof product.name === 'string' && product.name.trim()) 
       ? product.name.trim() 
@@ -466,7 +640,7 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
       return next(new AppError(`Product name validation failed for product ${product._id}`, 400));
     }
 
-    console.log(`Adding product to line items: ${productName}, Price: ${basePrice}, Qty: ${item.quantity}`);
+    console.log(`Adding product to line items: ${productName}, Original Price: ${basePrice}, Final Price: ${finalUnitPrice}, Qty: ${quantity}`);
 
     lineItems.push({
       price_data: {
@@ -478,20 +652,17 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
             ? [String(product.productImages[0])] 
             : [],
         },
-        unit_amount: Math.round(basePrice * 100), // Convert to cents
+        unit_amount: Math.round(finalUnitPrice * 100), // Convert to cents with discount applied
       },
-      quantity: item.quantity,
+      quantity: quantity,
     });
   }
 
-  // 💡 Step 2: Calculate subtotal (products only, before shipping and tax)
-  const productsSubtotal = lineItems.reduce(
+  // Recalculate subtotal with discounts applied to line items
+  const productsSubtotalWithDiscount = lineItems.reduce(
     (sum, item) => sum + (item.price_data.unit_amount * item.quantity),
     0
   ) / 100;
-
-  const seller = await User.findById(sellerId);
-  if (!seller) return next(new AppError("Seller not found", 404));
 
   // 💡 Step 3: Shipping cost based on method (must match frontend calculation)
   let shippingCost = 0;
@@ -501,11 +672,11 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
     shippingCost = 24.99;
   } else {
     // Standard shipping - match frontend logic: free if subtotal > 50, else 5.99
-    if (productsSubtotal > 50) {
+    if (productsSubtotalWithDiscount > 50) {
       shippingCost = 0;
     } else {
       // Check seller's free shipping threshold first, then fallback to 5.99
-      if (seller.sellerProfile.freeShippingThreshold && productsSubtotal >= seller.sellerProfile.freeShippingThreshold) {
+      if (seller.sellerProfile.freeShippingThreshold && productsSubtotalWithDiscount >= seller.sellerProfile.freeShippingThreshold) {
         shippingCost = 0;
       } else {
         shippingCost = seller.sellerProfile.shippingCharges || 5.99;
@@ -513,7 +684,7 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
     }
   }
   
-  console.log(`Shipping calculation: Method=${shippingMethod}, Subtotal=$${productsSubtotal.toFixed(2)}, Shipping=$${shippingCost.toFixed(2)}`);
+  console.log(`Shipping calculation: Method=${shippingMethod}, Subtotal=$${productsSubtotalWithDiscount.toFixed(2)}, Shipping=$${shippingCost.toFixed(2)}`);
 
   // Add shipping as line item if > 0
   if (shippingCost > 0) {
@@ -529,7 +700,7 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
     });
   }
 
-  // 💡 Step 4: Calculate tax (on products subtotal only, before shipping)
+  // 💡 Step 4: Calculate tax (on products subtotal only, after promo discount is finalized)
   const taxConfig = await TaxConfig.findOne({ isActive: true });
   let taxAmount = 0;
   let taxRate = 0.08; // Default 8% if no tax config
@@ -538,8 +709,9 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
     taxRate = taxConfig.rate / 100;
   }
   
-  // Calculate tax on products subtotal only (not including shipping)
-  taxAmount = productsSubtotal * taxRate;
+  // Calculate tax on products subtotal after promo discount (now guaranteed to be calculated)
+  const taxableAmount = productsSubtotalWithDiscount; // Use the subtotal with discounts already applied to line items
+  taxAmount = taxableAmount * taxRate;
   taxAmount = Math.round(taxAmount * 100) / 100;
 
   if (taxAmount > 0) {
@@ -556,13 +728,17 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
   }
 
   // Calculate final total for logging
-  const finalTotal = productsSubtotal + shippingCost + taxAmount;
+  const totalAfterDiscount = productsSubtotalWithDiscount; // productsSubtotalWithDiscount already has promo discount applied to line items
+  const finalTotal = totalAfterDiscount + shippingCost + taxAmount;
   console.log(`\n========== CHECKOUT SESSION CALCULATION ==========`);
-  console.log(`Products Subtotal: $${productsSubtotal.toFixed(2)}`);
+  console.log(`Products Subtotal: $${productsSubtotalWithDiscount.toFixed(2)}`);
+  if (promoDiscount > 0) {
+    console.log(`Promo Discount: -$${promoDiscount.toFixed(2)}`);
+  }
   console.log(`Shipping (${shippingMethod}): $${shippingCost.toFixed(2)}`);
-  console.log(`Tax (${(taxRate * 100).toFixed(2)}% on products): $${taxAmount.toFixed(2)}`);
+  console.log(`Tax (${(taxRate * 100).toFixed(2)}% on discounted total): $${taxAmount.toFixed(2)}`);
   console.log(`TOTAL: $${finalTotal.toFixed(2)}`);
-  console.log(`================================================\n`);
+  console.log(`================================================`);
 
   // 💡 Step 5: Create metadata for order creation
   // Build products with prices for metadata (use same prices as line items)
@@ -610,6 +786,7 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
     shippingMethod: shippingMethod || 'standard',
     shippingCost: shippingCost.toString(),
     taxAmount: taxAmount.toString(),
+    promoCodeId: promoCodeId || null, // Add promo code ID for tracking
   };
   
   console.log("📦 Metadata buyer ID:", userId);
@@ -973,6 +1150,32 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
       ],
     });
     console.log("✅ Order created successfully:", orderId, "Buyer (string):", finalBuyerString);
+    
+    // Record promo code usage if applicable
+    const sessionMetadata = session.metadata || {};
+    const usedPromoCodeId = sessionMetadata.promoCodeId || metadata.promoCodeId;
+    
+    if (usedPromoCodeId && finalBuyerString) {
+      try {
+        // Record the promo code usage
+        await CustomerPromoCodeUse.create({
+          user_id: finalBuyerString,
+          promoCodeId: usedPromoCodeId,
+          purchase_id: order._id
+        });
+        
+        // Update promo code usage count
+        await PromoCode.findByIdAndUpdate(
+          usedPromoCodeId,
+          { $inc: { usedCount: 1 } }
+        );
+        
+        console.log(`✅ Promo code usage recorded: User ${finalBuyerString} used promo ${usedPromoCodeId}`);
+      } catch (promoError) {
+        console.error("⚠️ Failed to record promo code usage:", promoError);
+        // Don't fail the order if promo code tracking fails
+      }
+    }
   } catch (createError) {
     console.error("❌ Failed to create order:", createError);
     console.error("❌ Error details:", JSON.stringify(createError, null, 2));
@@ -1226,6 +1429,33 @@ const createPurchaseFromPaymentIntent = async (paymentIntent) => {
       } catch (cartError) {
         console.error("⚠️ Failed to clear cart:", cartError);
         // Don't fail the order if cart clearing fails
+      }
+      
+      // Record promo code usage if applicable
+      const usedPromoCodeId = metadata.promoCodeId;
+      if (usedPromoCodeId && buyer) {
+        try {
+          // Record the promo code usage
+          await CustomerPromoCodeUse.create([
+            {
+              user_id: buyer,
+              promoCodeId: usedPromoCodeId,
+              purchase_id: orderId // We'll update this with the actual purchase ID after creation
+            }
+          ], { session });
+          
+          // Update promo code usage count
+          await PromoCode.findByIdAndUpdate(
+            usedPromoCodeId,
+            { $inc: { usedCount: 1 } },
+            { session }
+          );
+          
+          console.log(`✅ Promo code usage recorded in payment intent: User ${buyer} used promo ${usedPromoCodeId}`);
+        } catch (promoError) {
+          console.error("⚠️ Failed to record promo code usage in payment intent:", promoError);
+          // Don't fail the order if promo code tracking fails
+        }
       }
 
       await session.commitTransaction();
