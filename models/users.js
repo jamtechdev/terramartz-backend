@@ -209,6 +209,17 @@ const userSchema = new mongoose.Schema(
         enum: ["express", null],
         default: null,
       },
+      // KYC fields
+      kycStatus: {
+        type: String,
+        enum: ["pending", "submitted", "under_review", "approved", "rejected"],
+        default: "pending",
+      },
+      kycId: {
+        type: String,
+        ref: "KYC",
+        default: null,
+      },
     },
     socialLogin: {
       googleId: {

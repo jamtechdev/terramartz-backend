@@ -33,6 +33,9 @@ import customersDashboardRoutes from "./routes/customers/dashboardRoutes.js";
 import sellerStoreDetailRoutes from "./routes/seller/sellerStoreDetailRoutes.js";
 import stripeConnectRoutes from "./routes/sellers/stripeConnectRoutes.js";
 import userLatestRoutes from "./routes/customers/usersRoutes.js";
+// KYC Routes
+import kycRoutes from "./routes/sellers/kycRoutes.js";
+import adminKYCRoutes from "./routes/admin/adminKYCRoutes.js";
 // new api design part
 import customersCategoriesRoutes from "./routes/customers/categoriesRoutes.js";
 import customersProductsRoutes from "./routes/customers/productsRoutes.js";
@@ -116,6 +119,7 @@ app.use(
 // =====================
 // API Routes
 // =====================
+//seller routes and connected to file "/terrmraz/admin/farms"
 app.use("/api/users", userRouter);
 app.use("/api/category", categoryRouter);
 app.use("/api/categories", categoryRouter); // Alias for backward compatibility
@@ -131,6 +135,9 @@ app.use("/api/faqs", faqRoutes);
 app.use("/api/farms", farmsRouter);
 app.use("/api/seller", salesRoutes);
 app.use("/api/seller/stripe-connect", stripeConnectRoutes);
+// KYC Routes
+app.use("/api/seller/kyc", kycRoutes);
+app.use("/api/admin/kyc", adminKYCRoutes);
 
 // new api design
 app.use("/api/terramartz/users", userLatestRoutes);

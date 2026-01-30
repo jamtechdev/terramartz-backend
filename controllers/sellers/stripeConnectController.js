@@ -5,6 +5,22 @@ import AppError from "../../utils/apperror.js";
 
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
+// Add this function to check KYC status before allowing Stripe operations
+export const checkKYCStatus = catchAsync(async (req, res, next) => {
+  const seller = await User.findById(req.user._id);
+  
+  if (seller.sellerProfile?.kycStatus !== 'approved') {
+    return next(
+      new AppError(
+        'KYC verification required before accessing payment features. Please complete your KYC verification.',
+        403
+      )
+    );
+  }
+  
+  next();
+});
+
 // Helper function to convert country name to ISO code
 const getCountryCode = (country) => {
   if (!country) return "US";
