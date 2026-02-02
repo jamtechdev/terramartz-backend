@@ -178,6 +178,14 @@ const purchaseSchema = new mongoose.Schema(
       ],
       default: "new",
     },
+    platformFeeAmount: {
+      type: Number,
+      default: 0,
+    },
+    platformFeeRefunded: {
+      type: Number,
+      default: 0,
+    },
   },
   { timestamps: true },
 );

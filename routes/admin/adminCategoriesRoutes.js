@@ -6,11 +6,7 @@ import { protectAdmin } from "../../controllers/common/admin/authController.js";
 import { upload } from "../../middleware/admin/upload.js";
 
 // 🔐 ADMIN
-router.get(
-  "/",
-  protectAdmin("Payments", "View"),
-  adminCategoryController.getAllCategories,
-);
+router.get("/", adminCategoryController.getAllCategories);
 router.post(
   "/",
   protectAdmin,

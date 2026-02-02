@@ -12,6 +12,7 @@ import { CustomerPromoCodeUse } from "../../models/customers/customerPromoCodeUs
 import catchAsync from "../../utils/catchasync.js";
 import AppError from "../../utils/apperror.js";
 import { LoyaltyPoint } from "./../../models/customers/loyaltyPoints.js";
+import { PlatformFee } from "../../models/super-admin/platformFee.js";
 
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
@@ -196,6 +197,25 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
     seller.sellerProfile?.stripeAccountId &&
     seller.sellerProfile?.stripeAccountStatus === "active";
 
+  // ✅ Step 10.5: Fetch and calculate platform fee
+  const platformFeeConfig = await PlatformFee.findOne();
+  let platformFeeAmount = 0;
+
+  if (platformFeeConfig && hasStripeConnect) {
+    if (platformFeeConfig.type === "fixed") {
+      platformFeeAmount = platformFeeConfig.fee;
+    } else if (platformFeeConfig.type === "percentage") {
+      // Calculate percentage of total amount
+      platformFeeAmount = (totalAmount * platformFeeConfig.fee) / 100;
+    }
+    // Round to 2 decimals
+    platformFeeAmount = Math.round(platformFeeAmount * 100) / 100;
+
+    console.log(
+      `💰 Platform fee calculated: $${platformFeeAmount.toFixed(2)} (${platformFeeConfig.type})`,
+    );
+  }
+
   // ✅ Step 11: Create Stripe PaymentIntent
   const paymentIntentConfig = {
     amount: Math.round(totalAmount * 100),
@@ -211,22 +231,32 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
         })),
       ),
       shippingAddress: JSON.stringify(shippingAddress),
-      promoDiscount,
-      adminDiscount,
-      taxAmount,
-      shippingCost,
-      paymentType: hasStripeConnect ? "direct_charge" : "platform", // Track payment type
-      promoCodeId: promoCodeId || null, // Add promo code ID for tracking
+      promoDiscount: promoDiscount.toString(),
+      adminDiscount: adminDiscount.toString(),
+      taxAmount: taxAmount.toString(),
+      shippingCost: shippingCost.toString(),
+      platformFeeAmount: platformFeeAmount.toString(), // ✅ Store for refund/chargeback handling
+      platformFeeType: platformFeeConfig?.type || "none", // ✅ Store fee type
+      paymentType: hasStripeConnect ? "direct_charge" : "platform",
+      promoCodeId: promoCodeId || "",
     },
   };
 
-  // If seller has connected Stripe account, use Direct Charge
+  // ✅ If seller has connected Stripe account, use Direct Charge with application fee
   if (hasStripeConnect) {
     paymentIntentConfig.transfer_data = {
       destination: seller.sellerProfile.stripeAccountId,
     };
-    // Platform fee = 0 for now (can be added later)
-    // paymentIntentConfig.application_fee_amount = 0;
+
+    // ✅ Apply platform fee (amount is in cents)
+    if (platformFeeAmount > 0) {
+      paymentIntentConfig.application_fee_amount = Math.round(
+        platformFeeAmount * 100,
+      );
+      console.log(
+        `✅ Application fee set: ${paymentIntentConfig.application_fee_amount} cents`,
+      );
+    }
   }
 
   const paymentIntent = await stripe.paymentIntents.create(paymentIntentConfig);
@@ -237,17 +267,14 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
 
   if (shouldSkipWebhook) {
     try {
-      // Simulate successful payment for local development
       const mockPaymentIntent = {
         id: paymentIntent.id,
         amount: paymentIntent.amount,
         metadata: paymentIntent.metadata,
       };
 
-      // Directly create purchase (skip webhook)
       await createPurchaseFromPaymentIntent(mockPaymentIntent);
 
-      // Fetch the created purchase to get orderId
       const createdPurchase = await Purchase.findOne({
         paymentIntentId: paymentIntent.id,
       });
@@ -256,12 +283,15 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
         status: "success",
         clientSecret: paymentIntent.client_secret,
         breakdown: {
-          subtotal,
-          promoDiscount,
-          adminDiscount,
-          shippingCost,
-          taxAmount,
-          totalAmount,
+          subtotal: Math.round(subtotal * 100) / 100,
+          promoDiscount: Math.round(promoDiscount * 100) / 100,
+          adminDiscount: Math.round(adminDiscount * 100) / 100,
+          shippingCost: Math.round(shippingCost * 100) / 100,
+          taxAmount: Math.round(taxAmount * 100) / 100,
+          platformFee: Math.round(platformFeeAmount * 100) / 100, // ✅ Include platform fee
+          totalAmount: Math.round(totalAmount * 100) / 100,
+          sellerReceives:
+            Math.round((totalAmount - platformFeeAmount) * 100) / 100, // ✅ What seller gets
         },
         message: "Payment completed (webhook skipped for local development)",
         orderCreated: true,
@@ -270,7 +300,6 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
       });
     } catch (err) {
       console.error("⚠️ Failed to create purchase directly:", err);
-      // Continue with normal flow even if direct creation fails
     }
   }
 
@@ -278,12 +307,14 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
     status: "success",
     clientSecret: paymentIntent.client_secret,
     breakdown: {
-      subtotal,
-      promoDiscount,
-      adminDiscount,
-      shippingCost,
-      taxAmount,
-      totalAmount,
+      subtotal: Math.round(subtotal * 100) / 100,
+      promoDiscount: Math.round(promoDiscount * 100) / 100,
+      adminDiscount: Math.round(adminDiscount * 100) / 100,
+      shippingCost: Math.round(shippingCost * 100) / 100,
+      taxAmount: Math.round(taxAmount * 100) / 100,
+      platformFee: Math.round(platformFeeAmount * 100) / 100, // ✅ Include platform fee
+      totalAmount: Math.round(totalAmount * 100) / 100,
+      sellerReceives: Math.round((totalAmount - platformFeeAmount) * 100) / 100, // ✅ What seller gets
     },
   });
 });
@@ -356,6 +387,10 @@ export const webhookPayment = async (req, res, next) => {
         ? JSON.parse(metadata.shippingAddress)
         : {};
 
+      const platformFeeAmount = metadata.platformFeeAmount
+        ? Number(metadata.platformFeeAmount)
+        : 0;
+
       // Add taxAmount and shippingCost to shippingAddress for invoice display
       const taxAmount = metadata.taxAmount ? Number(metadata.taxAmount) : 0;
       const shippingCost = metadata.shippingCost
@@ -418,6 +453,7 @@ export const webhookPayment = async (req, res, next) => {
         products: purchaseProducts,
         shippingAddress,
         totalAmount,
+        platformFeeAmount,
         paymentStatus: "paid",
         status: "new",
         paymentIntentId: session.payment_intent,
@@ -807,17 +843,16 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
     });
   }
 
-  // 💡 Step 4: Calculate tax (on products subtotal only, after promo discount is finalized)
+  // 💡 Step 4: Calculate tax
   const taxConfig = await TaxConfig.findOne({ isActive: true });
   let taxAmount = 0;
-  let taxRate = 0.08; // Default 8% if no tax config
+  let taxRate = 0.08;
 
   if (taxConfig && taxConfig.rate) {
     taxRate = taxConfig.rate / 100;
   }
 
-  // Calculate tax on products subtotal after promo discount (now guaranteed to be calculated)
-  const taxableAmount = productsSubtotalWithDiscount; // Use the subtotal with discounts already applied to line items
+  const taxableAmount = productsSubtotalWithDiscount;
   taxAmount = taxableAmount * taxRate;
   taxAmount = Math.round(taxAmount * 100) / 100;
 
@@ -834,9 +869,41 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
     });
   }
 
-  // Calculate final total for logging
-  const totalAfterDiscount = productsSubtotalWithDiscount; // productsSubtotalWithDiscount already has promo discount applied to line items
+  // Calculate final total
+  const totalAfterDiscount = productsSubtotalWithDiscount;
   const finalTotal = totalAfterDiscount + shippingCost + taxAmount;
+
+  // ✅ Step 4.5: Calculate Platform Fee
+  const hasStripeConnect =
+    seller.sellerProfile?.stripeAccountId &&
+    seller.sellerProfile?.stripeAccountStatus === "active";
+
+  let platformFeeAmount = 0;
+  const platformFeeConfig = await PlatformFee.findOne();
+  console.log("Platform fee 0==>");
+
+  // if (platformFeeConfig && hasStripeConnect) {
+  console.log("Platform fee 1==>");
+
+  if (platformFeeConfig.type === "fixed") {
+    console.log("Platform fee 2==>");
+
+    platformFeeAmount = platformFeeConfig.fee;
+  } else if (platformFeeConfig.type === "percentage") {
+    platformFeeAmount = (finalTotal * platformFeeConfig.fee) / 100;
+  }
+  platformFeeAmount = Math.round(platformFeeAmount * 100) / 100;
+  console.log("Platform fee 3==>", platformFeeAmount);
+
+  console.log(
+    `💰 Platform fee calculated: $${platformFeeAmount.toFixed(2)} (${platformFeeConfig.type})`,
+  );
+  // } else {
+  //   console.log(
+  //     `💰 No platform fee (Stripe Connect not enabled for seller or no fee config)`,
+  //   );
+  // }
+
   console.log(`\n========== CHECKOUT SESSION CALCULATION ==========`);
   console.log(`Products Subtotal: $${productsSubtotalWithDiscount.toFixed(2)}`);
   if (promoDiscount > 0) {
@@ -846,22 +913,21 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
   console.log(
     `Tax (${(taxRate * 100).toFixed(2)}% on discounted total): $${taxAmount.toFixed(2)}`,
   );
+  console.log(`Platform Fee: $${platformFeeAmount.toFixed(2)}`); // ✅ Log platform fee
   console.log(`TOTAL: $${finalTotal.toFixed(2)}`);
+  console.log(
+    `Seller Receives: $${(finalTotal - platformFeeAmount).toFixed(2)}`,
+  ); // ✅ Log seller amount
   console.log(`================================================`);
 
   // 💡 Step 5: Create metadata for order creation
-  // Build products with prices for metadata (use same prices as line items)
   const productsWithPrices = [];
-  // We already calculated basePrice in the loop above, so we need to store it
-  // Let's rebuild with the same logic
   for (const item of products) {
     const product = await Product.findById(item.product);
     if (!product) continue;
 
-    // Use same price calculation as line items
     let itemPrice = item.price ? Number(item.price) : Number(product.price);
 
-    // Apply discount if price not provided from cart
     if (
       !item.price &&
       product.discount &&
@@ -874,7 +940,6 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
       if (itemPrice < 0) itemPrice = 0;
     }
 
-    // Ensure price is valid
     if (!itemPrice || itemPrice <= 0) {
       itemPrice = Number(product.price) || 0;
     }
@@ -891,7 +956,6 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
     JSON.stringify(productsWithPrices, null, 2),
   );
 
-  // Use consistent user ID format
   const userId = String(req.user._id || req.user.id);
 
   const metadata = {
@@ -901,17 +965,19 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
     shippingMethod: shippingMethod || "standard",
     shippingCost: shippingCost.toString(),
     taxAmount: taxAmount.toString(),
-    promoCodeId: promoCodeId || null, // Add promo code ID for tracking
+    platformFeeAmount: platformFeeAmount.toString(), // ✅ Add platform fee to metadata
+    platformFeeType: platformFeeConfig?.type || "none", // ✅ Store fee type
+    promoCodeId: promoCodeId || null,
   };
 
   console.log("📦 Metadata buyer ID:", userId);
+  console.log("💰 Metadata platform fee:", platformFeeAmount); // ✅ Log
 
   // 💡 Step 6: Validate line items before creating session
   if (lineItems.length === 0) {
     return next(new AppError("No valid line items to process", 400));
   }
 
-  // Validate all line items have required fields
   for (let i = 0; i < lineItems.length; i++) {
     const item = lineItems[i];
     if (
@@ -940,20 +1006,17 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
 
   if (customerEmail) {
     try {
-      // Search for existing customer by email
       const existingCustomers = await stripe.customers.list({
         email: customerEmail,
         limit: 1,
       });
 
       if (existingCustomers.data.length > 0) {
-        // Use existing customer
         stripeCustomerId = existingCustomers.data[0].id;
         console.log(
           `✅ Found existing Stripe customer: ${stripeCustomerId} for email: ${customerEmail}`,
         );
       } else {
-        // Create new customer
         const newCustomer = await stripe.customers.create({
           email: customerEmail,
           name: req.user.name || shippingAddress?.name,
@@ -968,24 +1031,19 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
       }
     } catch (error) {
       console.error("❌ Error finding/creating Stripe customer:", error);
-      // Continue without customer_id if there's an error
     }
   }
 
   // 💡 Step 8: Create Stripe Checkout Session
-  // Get frontend URL from environment or detect from request origin
   const getFrontendUrl = () => {
-    // Priority: 1. Environment variable, 2. Request origin, 3. Default localhost
     if (process.env.FRONTEND_URL) {
       return process.env.FRONTEND_URL;
     }
 
-    // Try to get from request origin (for production)
     const origin = req.headers.origin || req.headers.referer;
     if (origin) {
       try {
         const url = new URL(origin);
-        // If it's not localhost, use it
         if (
           !url.hostname.includes("localhost") &&
           !url.hostname.includes("127.0.0.1")
@@ -997,7 +1055,6 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
       }
     }
 
-    // Fallback to localhost for development
     return "http://localhost:3000";
   };
 
@@ -1011,10 +1068,24 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
     success_url: `${frontendUrl}/order-success?session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${frontendUrl}/order-cancel`,
     metadata: metadata,
-    // Removed shipping_address_collection - shipping address is already collected before Stripe
   };
 
-  // Add customer_id if we have one, otherwise use customer_email
+  // ✅ Add Stripe Connect configuration if seller has connected account
+  if (hasStripeConnect && platformFeeAmount > 0) {
+    sessionConfig.payment_intent_data = {
+      application_fee_amount: Math.round(platformFeeAmount * 100), // ✅ Platform fee in cents
+      transfer_data: {
+        destination: seller.sellerProfile.stripeAccountId, // ✅ Transfer to seller's account
+      },
+    };
+
+    console.log(`✅ Stripe Connect configured:`);
+    console.log(`   Destination: ${seller.sellerProfile.stripeAccountId}`);
+    console.log(
+      `   Application Fee: ${Math.round(platformFeeAmount * 100)} cents`,
+    );
+  }
+
   if (stripeCustomerId) {
     sessionConfig.customer = stripeCustomerId;
   } else {
@@ -1031,7 +1102,9 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
       productsSubtotal: productsSubtotal,
       shippingCost: shippingCost,
       taxAmount: taxAmount,
+      platformFee: platformFeeAmount, // ✅ Include platform fee in response
       total: finalTotal,
+      sellerReceives: finalTotal - platformFeeAmount, // ✅ What seller receives
     },
   });
 });
@@ -1150,6 +1223,7 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
         totalItems,
         products,
         totalAmount: existingOrder.totalAmount,
+        platformFee: existingOrder.platformFeeAmount || 0, // ✅ Include platform fee
         paymentStatus: existingOrder.paymentStatus,
         status: existingOrder.status,
         shippingAddress: existingOrder.shippingAddress,
@@ -1186,6 +1260,11 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
     // Continue with empty address if parsing fails
   }
 
+  // ✅ Extract platform fee from metadata
+  const platformFeeAmount = metadata.platformFeeAmount
+    ? Number(metadata.platformFeeAmount)
+    : 0;
+
   // Add taxAmount and shippingCost to shippingAddress for invoice display
   const taxAmount = metadata.taxAmount ? Number(metadata.taxAmount) : 0;
   const shippingCost = metadata.shippingCost
@@ -1197,6 +1276,7 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
 
   console.log("📦 Creating order with products:", products.length);
   console.log("📦 Products data:", JSON.stringify(products, null, 2));
+  console.log("💰 Platform fee amount:", platformFeeAmount); // ✅ Log platform fee
 
   if (!products.length) {
     console.error("❌ No products found in metadata");
@@ -1281,12 +1361,15 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
   let order;
   try {
     console.log("📦 Creating order with buyer (string):", finalBuyerString);
+    console.log("💰 Platform fee to store:", platformFeeAmount); // ✅ Log before creation
+
     order = await Purchase.create({
       orderId,
       buyer: finalBuyerString, // Store as string (Purchase schema expects String)
       products: purchaseProducts,
       shippingAddress,
       totalAmount,
+      platformFeeAmount, // ✅ Store platform fee
       paymentStatus: "paid",
       status: "new",
       paymentIntentId: session.payment_intent,
@@ -1306,6 +1389,7 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
       "Buyer (string):",
       finalBuyerString,
     );
+    console.log("💰 Platform fee stored:", order.platformFeeAmount || 0); // ✅ Confirm storage
 
     // Record promo code usage if applicable
     const sessionMetadata = session.metadata || {};
@@ -1387,23 +1471,39 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
       try {
         const seller = await User.findById(sellerId);
         if (seller) {
+          // ✅ Calculate seller's portion (after platform fee if applicable)
+          const sellerProducts = purchaseProducts.filter(
+            (p) => p.seller === sellerId,
+          );
+          const sellerSubtotal = sellerProducts.reduce(
+            (sum, p) => sum + p.price * p.quantity,
+            0,
+          );
+
+          // If this is a Stripe Connect payment, mention net amount
+          let amountMessage = `Total: $${sellerSubtotal.toFixed(2)}`;
+          if (platformFeeAmount > 0) {
+            // Calculate proportional platform fee for this seller
+            const sellerProportion = sellerSubtotal / totalAmount;
+            const sellerPlatformFee = platformFeeAmount * sellerProportion;
+            const sellerNetAmount = sellerSubtotal - sellerPlatformFee;
+            amountMessage = `Subtotal: $${sellerSubtotal.toFixed(2)} (You receive: $${sellerNetAmount.toFixed(2)} after platform fee)`;
+          }
+
           await Notification.create({
             user: String(sellerId),
             type: "order_placed",
             title: "New Order Received",
-            message: `You have received a new order (${orderId}) with ${purchaseProducts.filter((p) => p.seller === sellerId).length} product(s). Total: $${purchaseProducts
-              .filter((p) => p.seller === sellerId)
-              .reduce((sum, p) => sum + p.price * p.quantity, 0)
-              .toFixed(2)}`,
+            message: `You have received a new order (${orderId}) with ${sellerProducts.length} product(s). ${amountMessage}`,
             orderId: orderId,
             order: String(order._id),
             metadata: {
-              totalAmount: purchaseProducts
-                .filter((p) => p.seller === sellerId)
-                .reduce((sum, p) => sum + p.price * p.quantity, 0),
-              productCount: purchaseProducts.filter(
-                (p) => p.seller === sellerId,
-              ).length,
+              totalAmount: sellerSubtotal,
+              platformFee:
+                platformFeeAmount > 0
+                  ? platformFeeAmount * (sellerSubtotal / totalAmount)
+                  : 0,
+              productCount: sellerProducts.length,
             },
           });
         }
@@ -1453,6 +1553,8 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
     totalItems,
     products: formattedProducts,
     totalAmount: order.totalAmount,
+    platformFee: platformFeeAmount, // ✅ Include platform fee in response
+    sellerReceives: totalAmount - platformFeeAmount, // ✅ What seller gets
     paymentStatus: order.paymentStatus,
     status: order.status,
     shippingAddress: order.shippingAddress,
@@ -1461,6 +1563,8 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
   };
 
   console.log("✅ Order created and formatted:", formattedOrder.orderId);
+  console.log("💰 Platform fee:", platformFeeAmount);
+  console.log("💰 Seller receives:", totalAmount - platformFeeAmount);
 
   res.status(201).json({
     status: "success",
@@ -1670,17 +1774,38 @@ const handleRefund = async (charge) => {
     const refundAmount = charge.amount_refunded / 100;
     const isFullRefund = charge.refunded; // true if fully refunded
 
+    // ✅ Get platform fee from metadata
+    const platformFeeAmount = purchase.platformFeeAmount || 0;
+    const hasPlatformFee = platformFeeAmount > 0;
+
+    // ✅ Calculate application fee refund
+    // When refunding with Stripe Connect, the application fee is automatically handled
+    // But we need to track it for our records
+    let platformFeeRefunded = 0;
+    if (hasPlatformFee) {
+      if (isFullRefund) {
+        // Full refund = full platform fee reversal
+        platformFeeRefunded = platformFeeAmount;
+      } else {
+        // Partial refund = proportional platform fee reversal
+        const refundPercentage = refundAmount / purchase.totalAmount;
+        platformFeeRefunded = platformFeeAmount * refundPercentage;
+        platformFeeRefunded = Math.round(platformFeeRefunded * 100) / 100;
+      }
+    }
+
     // Update purchase status
     purchase.paymentStatus = isFullRefund ? "refunded" : "partially_refunded";
     purchase.refundAmount = refundAmount;
     purchase.refundedAt = new Date();
+    purchase.platformFeeRefunded = platformFeeRefunded; // ✅ Track platform fee refund
 
     // Add refund timeline event
     purchase.orderTimeline.push({
       event: isFullRefund ? "Full Refund Issued" : "Partial Refund Issued",
       timestamp: new Date(),
       location: "System",
-      notes: `Refund amount: $${refundAmount.toFixed(2)}`,
+      notes: `Refund amount: $${refundAmount.toFixed(2)}${hasPlatformFee ? `, Platform fee reversed: $${platformFeeRefunded.toFixed(2)}` : ""}`,
     });
 
     // If full refund, restore stock for all products
@@ -1707,6 +1832,11 @@ const handleRefund = async (charge) => {
       `✅ ${isFullRefund ? "Full" : "Partial"} refund processed for order:`,
       purchase.orderId,
     );
+    if (hasPlatformFee) {
+      console.log(
+        `   Platform fee reversed: $${platformFeeRefunded.toFixed(2)}`,
+      );
+    }
 
     // TODO: Send email notification to buyer about refund
     // await sendRefundEmail(purchase);
@@ -1731,6 +1861,9 @@ const handleDisputeCreated = async (dispute) => {
       return;
     }
 
+    // ✅ Get platform fee information
+    const platformFeeAmount = purchase.platformFeeAmount || 0;
+
     // Update purchase with dispute information
     purchase.disputeStatus = "under_review";
     purchase.disputeId = dispute.id;
@@ -1743,7 +1876,7 @@ const handleDisputeCreated = async (dispute) => {
       event: "Chargeback Dispute Created",
       timestamp: new Date(),
       location: "System",
-      notes: `Reason: ${dispute.reason}, Amount: $${(dispute.amount / 100).toFixed(2)}`,
+      notes: `Reason: ${dispute.reason}, Amount: $${(dispute.amount / 100).toFixed(2)}${platformFeeAmount > 0 ? `, Platform fee at risk: $${platformFeeAmount.toFixed(2)}` : ""}`,
     });
 
     // Mark payment status as disputed
@@ -1752,6 +1885,11 @@ const handleDisputeCreated = async (dispute) => {
     await purchase.save();
 
     console.log("⚠️ Dispute created for order:", purchase.orderId);
+    if (platformFeeAmount > 0) {
+      console.log(
+        `   ⚠️ Platform fee at risk: $${platformFeeAmount.toFixed(2)}`,
+      );
+    }
 
     // TODO: Send email notification to seller about dispute
     // await sendDisputeNotificationToSeller(purchase);
@@ -1801,6 +1939,10 @@ const handleDisputeClosed = async (dispute) => {
       return;
     }
 
+    // ✅ Get platform fee information
+    const platformFeeAmount = purchase.platformFeeAmount || 0;
+    const hasPlatformFee = platformFeeAmount > 0;
+
     // Update dispute status
     purchase.disputeStatus = dispute.status; // 'won', 'lost', or 'warning_closed'
     purchase.disputeClosedAt = new Date();
@@ -1812,6 +1954,11 @@ const handleDisputeClosed = async (dispute) => {
       purchase.status = "refunded";
       purchase.refundAmount = dispute.amount / 100;
       purchase.refundedAt = new Date();
+
+      // ✅ Platform fee is reversed when dispute is lost
+      if (hasPlatformFee) {
+        purchase.platformFeeRefunded = platformFeeAmount;
+      }
 
       // Restore stock
       for (const item of purchase.products) {
@@ -1830,18 +1977,34 @@ const handleDisputeClosed = async (dispute) => {
         event: "Dispute Lost - Refund Issued",
         timestamp: new Date(),
         location: "System",
-        notes: `Chargeback amount: $${(dispute.amount / 100).toFixed(2)}`,
+        notes: `Chargeback amount: $${(dispute.amount / 100).toFixed(2)}${hasPlatformFee ? `, Platform fee reversed: $${platformFeeAmount.toFixed(2)}` : ""}`,
       });
+
+      console.log(
+        `❌ Dispute lost for order ${purchase.orderId}. Chargeback: $${(dispute.amount / 100).toFixed(2)}`,
+      );
+      if (hasPlatformFee) {
+        console.log(
+          `   Platform fee reversed: $${platformFeeAmount.toFixed(2)}`,
+        );
+      }
     } else if (dispute.status === "won") {
-      // Seller won the dispute
+      // Seller won the dispute - platform fee retained
       purchase.paymentStatus = "paid";
 
       purchase.orderTimeline.push({
         event: "Dispute Won",
         timestamp: new Date(),
         location: "System",
-        notes: "Payment retained",
+        notes: `Payment retained${hasPlatformFee ? `, Platform fee retained: $${platformFeeAmount.toFixed(2)}` : ""}`,
       });
+
+      console.log(`✅ Dispute won for order ${purchase.orderId}`);
+      if (hasPlatformFee) {
+        console.log(
+          `   Platform fee retained: $${platformFeeAmount.toFixed(2)}`,
+        );
+      }
     } else {
       // Warning closed or other status
       purchase.orderTimeline.push({
@@ -1891,28 +2054,57 @@ export const createRefund = catchAsync(async (req, res, next) => {
   const refundAmount = amount || purchase.totalAmount;
   const isPartial = amount && amount < purchase.totalAmount;
 
-  // Create refund in Stripe
-  const refund = await stripe.refunds.create({
+  // ✅ Get platform fee information
+  const platformFeeAmount = purchase.platformFeeAmount || 0;
+  const hasPlatformFee = platformFeeAmount > 0;
+
+  // ✅ Calculate platform fee refund
+  let platformFeeRefund = 0;
+  if (hasPlatformFee) {
+    if (isPartial) {
+      // Proportional platform fee reversal
+      const refundPercentage = refundAmount / purchase.totalAmount;
+      platformFeeRefund = platformFeeAmount * refundPercentage;
+      platformFeeRefund = Math.round(platformFeeRefund * 100) / 100;
+    } else {
+      // Full platform fee reversal
+      platformFeeRefund = platformFeeAmount;
+    }
+  }
+
+  // ✅ Create refund in Stripe with fee reversal
+  const refundConfig = {
     payment_intent: purchase.paymentIntentId,
     amount: Math.round(refundAmount * 100), // Convert to cents
     reason: reason || "requested_by_customer",
     metadata: {
       orderId: purchase.orderId,
       refundType: isPartial ? "partial" : "full",
+      platformFeeRefunded: platformFeeRefund.toString(),
     },
-  });
+  };
+
+  // ✅ If there's a platform fee and this is a Stripe Connect payment, reverse it
+  if (hasPlatformFee && platformFeeRefund > 0) {
+    refundConfig.reverse_transfer = false; // Don't reverse transfer (seller keeps their portion)
+    refundConfig.refund_application_fee = true; // But refund the platform fee
+  }
+
+  const refund = await stripe.refunds.create(refundConfig);
 
   // Update will be handled by webhook (charge.refunded event)
   // But we can update immediately here as well
   purchase.paymentStatus = isPartial ? "partially_refunded" : "refunded";
   purchase.refundAmount = refundAmount;
   purchase.refundedAt = new Date();
+  purchase.platformFeeRefunded =
+    (purchase.platformFeeRefunded || 0) + platformFeeRefund; // ✅ Track cumulative platform fee refund
 
   purchase.orderTimeline.push({
     event: isPartial ? "Partial Refund Initiated" : "Full Refund Initiated",
     timestamp: new Date(),
     location: "Admin/Seller",
-    notes: `Reason: ${reason || "Customer request"}, Amount: $${refundAmount.toFixed(2)}`,
+    notes: `Reason: ${reason || "Customer request"}, Amount: $${refundAmount.toFixed(2)}${hasPlatformFee ? `, Platform fee reversed: $${platformFeeRefund.toFixed(2)}` : ""}`,
   });
 
   if (!isPartial) {
@@ -1934,6 +2126,7 @@ export const createRefund = catchAsync(async (req, res, next) => {
     refund: {
       id: refund.id,
       amount: refundAmount,
+      platformFeeRefunded: platformFeeRefund,
       status: refund.status,
     },
   });
