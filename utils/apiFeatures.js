@@ -28,6 +28,18 @@ class APIFeatures {
     return this;
   }
 
+  // 3️⃣ Field Limiting
+  limitFields() {
+    if (this.queryString.fields) {
+      const fields = this.queryString.fields.split(',').join(' ');
+      this.query = this.query.select(fields);
+    } else {
+      // Exclude __v field by default
+      this.query = this.query.select('-__v');
+    }
+    return this;
+  }
+
   //4. Pagination
   paginate() {
     let page = this.queryString.page * 1 || 1;
