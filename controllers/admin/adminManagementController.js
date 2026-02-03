@@ -5,14 +5,8 @@ import APIFeatures from "../../utils/apiFeatures.js";
 
 // GET - Get All Admins (Super Admin Only)
 export const getAllAdmins = catchAsync(async (req, res, next) => {
-  // Only Super Admins can view all admins
-  if (req.user.role !== "Super Admin") {
-    return next(
-      new AppError("Only Super Admins can access this resource", 403)
-    );
-  }
-
-  const features = new APIFeatures(Admin.find(), req.query)
+const features = new APIFeatures(Admin.find(), req.query)
+    .search()
     .filter()
     .sort()
     .limitFields()
@@ -32,7 +26,7 @@ export const getAllAdmins = catchAsync(async (req, res, next) => {
       totalPages: Math.ceil(total / (req.query.limit * 1 || 10)),
     },
     data: {
-      admins: admins.map(admin => ({
+      admins: admins.map((admin) => ({
         _id: admin._id,
         name: admin.name,
         email: admin.email,
@@ -41,7 +35,7 @@ export const getAllAdmins = catchAsync(async (req, res, next) => {
         isActive: admin.isActive,
         permissions: admin.permissions,
         createdAt: admin.createdAt,
-        updatedAt: admin.updatedAt
+        updatedAt: admin.updatedAt,
       })),
     },
   });
@@ -49,13 +43,6 @@ export const getAllAdmins = catchAsync(async (req, res, next) => {
 
 // GET - Get Specific Admin by ID (Super Admin Only)
 export const getAdminById = catchAsync(async (req, res, next) => {
-  // Only Super Admins can view specific admin details
-  if (req.user.role !== "Super Admin") {
-    return next(
-      new AppError("Only Super Admins can access this resource", 403)
-    );
-  }
-
   const admin = await Admin.findById(req.params.id);
 
   if (!admin) {
@@ -74,8 +61,65 @@ export const getAdminById = catchAsync(async (req, res, next) => {
         isActive: admin.isActive,
         permissions: admin.permissions,
         createdAt: admin.createdAt,
-        updatedAt: admin.updatedAt
+        updatedAt: admin.updatedAt,
       },
     },
+  });
+});
+
+// ✅ Update staff member
+export const updateStaff = catchAsync(async (req, res, next) => {
+  const { name, phoneNumber, role } = req.body;
+  const updateData = {};
+
+  if (name !== undefined) updateData.name = name;
+  if (phoneNumber !== undefined) updateData.phoneNumber = phoneNumber;
+  if (role !== undefined) updateData.role = role;
+
+  const staff = await Admin.findByIdAndUpdate(req.params.id, updateData, {
+    new: true,
+    runValidators: true,
+  });
+
+  if (!staff) {
+    return next(new AppError("No staff member found with that ID!", 404));
+  }
+
+  res.status(200).json({
+    status: "success",
+    message: "Staff member updated successfully!",
+    data: staff,
+  });
+});
+
+// ✅ Toggle staff status
+export const toggleStaffStatus = catchAsync(async (req, res, next) => {
+  const staff = await Admin.findById(req.params.id);
+
+  if (!staff) {
+    return next(new AppError("No staff member found with that ID!", 404));
+  }
+
+  staff.isActive = !staff.isActive;
+  await staff.save();
+
+  res.status(200).json({
+    status: "success",
+    message: `Staff member ${staff.isActive ? "activated" : "deactivated"} successfully!`,
+    data: staff,
+  });
+});
+
+// ✅ Delete staff member
+export const deleteStaff = catchAsync(async (req, res, next) => {
+  const staff = await Admin.findByIdAndDelete(req.params.id);
+
+  if (!staff) {
+    return next(new AppError("No staff member found with that ID!", 404));
+  }
+
+  res.status(200).json({
+    status: "success",
+    message: "Staff member deleted successfully!",
   });
 });
