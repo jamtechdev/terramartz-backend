@@ -145,12 +145,12 @@ export const sectionTwo = catchAsync(async (req, res, next) => {
   res.status(200).json({
     recentPurchases,
     monthlyRevenue,
-    orderStats: orderStats[0].statuses,
+    orderStats: orderStats,
   });
 });
 
 export const sectionThree = catchAsync(async (req, res, next) => {
-  const limit = 10;
+  const limit = 3;
 
   const topProducts = await Purchase.aggregate([
     {
@@ -182,13 +182,13 @@ export const sectionThree = catchAsync(async (req, res, next) => {
       $project: {
         _id: 0,
         productId: "$_id",
-        productName: "$productDetails.name",
-        sku: "$productDetails.sku",
+        productName: "$productDetails.title",
+        sku: null,
         category: "$productDetails.category",
-        stock: "$productDetails.stock",
+        stock: "$productDetails.stockQuantity",
         price: "$productDetails.price",
         status: "$productDetails.status",
-        image: "$productDetails.images",
+        image: "$productDetails.productImages",
         totalSold: 1,
         totalRevenue: { $round: ["$totalRevenue", 2] },
       },
@@ -350,8 +350,22 @@ export const sectionFour = catchAsync(async (req, res, next) => {
               { case: { $eq: ["$_id", "Complaint"] }, then: "High" },
               { case: { $eq: ["$_id", "Product Question"] }, then: "Medium" },
               { case: { $eq: ["$_id", "Partnership"] }, then: "Low" },
+              { case: { $eq: ["$_id", "General Inquiry"] }, then: "Low" },
             ],
             default: "Low",
+          },
+        },
+        tickets: {
+          $map: {
+            input: "$tickets",
+            as: "ticket",
+            in: {
+              contactId: "$$ticket._id",
+              // Add other fields you want to include from each ticket
+              status: "$$ticket.status",
+              createdAt: "$$ticket.createdAt",
+              respondedAt: "$$ticket.respondedAt",
+            },
           },
         },
       },
