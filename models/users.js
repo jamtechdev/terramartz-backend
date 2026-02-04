@@ -299,6 +299,10 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    isActive: {
+      type: Boolean,
+      default: false,
+    },
     twoFactorMethod: {
       type: String,
       enum: ["email", "phone", "authenticator"],
@@ -308,7 +312,7 @@ const userSchema = new mongoose.Schema(
     twoFactorTempExpires: Date,
     // Two-Factor Authentication code end
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 // 📍 Business location searching
@@ -336,7 +340,7 @@ userSchema.pre("save", function (next) {
 
 userSchema.methods.correctPassword = async function (
   candidatePassword,
-  userPassword
+  userPassword,
 ) {
   return await bcrypt.compare(candidatePassword, userPassword);
 };
@@ -345,7 +349,7 @@ userSchema.methods.changedPasswordAfter = function (JWTTimestamp) {
   if (this.passwordChangedAt) {
     const changedTimestamp = parseInt(
       this.passwordChangedAt.getTime() / 1000,
-      10
+      10,
     );
     return JWTTimestamp < changedTimestamp;
   }

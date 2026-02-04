@@ -18,6 +18,7 @@ export const sectionOne = catchAsync(async (req, res, next) => {
 
   const activeUsers = await User.countDocuments({
     isAccountVerified: true,
+    // isActive: true,
   });
 
   const productInStock = await Product.countDocuments();

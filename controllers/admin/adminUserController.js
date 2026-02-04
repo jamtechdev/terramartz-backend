@@ -71,9 +71,11 @@ export const getAllUsers = catchAsync(async (req, res) => {
       status
       role
       createdAt
-      sellerProfile.shopName
-      businessDetails.businessName
-      `
+      sellerProfile
+      businessDetails
+      isActive
+      isAccountVerified
+      `,
     )
     .sort({ createdAt: -1 })
     .skip(skip)
@@ -111,6 +113,10 @@ export const getAllUsers = catchAsync(async (req, res) => {
         status: u.status,
         role: u.role,
         date: u.createdAt,
+        isActive: u.isActive,
+        sellerProfile: u.sellerProfile,
+        businessDetails: u.businessDetails,
+        isVerified: u.isAccountVerified,
       };
     }),
   });
@@ -153,6 +159,7 @@ export const getUserById = catchAsync(async (req, res, next) => {
       createdAt
       updatedAt
       isAccountVerified
+      isActive
       sellerProfile
       businessDetails
       socialLogin
@@ -169,7 +176,7 @@ export const getUserById = catchAsync(async (req, res, next) => {
       defaultAddress
       twoFactorEnabled
       twoFactorMethod
-      `
+      `,
     )
     .lean();
 
@@ -194,6 +201,7 @@ export const getUserById = catchAsync(async (req, res, next) => {
       accountType: user.accountType,
       profilePicture: user.profilePicture,
       isAccountVerified: user.isAccountVerified,
+      isActive: user.isActive,
       sellerProfile: user.sellerProfile,
       businessDetails: user.businessDetails,
       socialLogin: user.socialLogin,
@@ -229,8 +237,8 @@ export const updateUserStatus = catchAsync(async (req, res, next) => {
     return next(
       new AppError(
         `Invalid status. Valid statuses are: ${validStatuses.join(", ")}`,
-        400
-      )
+        400,
+      ),
     );
   }
 
@@ -242,12 +250,16 @@ export const updateUserStatus = catchAsync(async (req, res, next) => {
   const updatedUser = await User.findByIdAndUpdate(
     id,
     { status },
-    { new: true, runValidators: true }
+    { new: true, runValidators: true },
   ).select(
-    "firstName middleName lastName email phoneNumber status role createdAt updatedAt"
+    "firstName middleName lastName email phoneNumber status role createdAt updatedAt",
   );
 
-  const fullName = [updatedUser.firstName, updatedUser.middleName, updatedUser.lastName]
+  const fullName = [
+    updatedUser.firstName,
+    updatedUser.middleName,
+    updatedUser.lastName,
+  ]
     .filter(Boolean)
     .join(" ");
 
@@ -278,8 +290,8 @@ export const updateUserRole = catchAsync(async (req, res, next) => {
     return next(
       new AppError(
         `Invalid role. Valid roles are: ${validRoles.join(", ")}`,
-        400
-      )
+        400,
+      ),
     );
   }
 
@@ -301,26 +313,50 @@ export const updateUserRole = catchAsync(async (req, res, next) => {
   const updatedUser = await User.findByIdAndUpdate(
     id,
     { role },
-    { new: true, runValidators: true }
+    { new: true, runValidators: true },
   ).select(
-    "firstName middleName lastName email phoneNumber status role accountType createdAt updatedAt"
+    "firstName middleName lastName email phoneNumber status role accountType createdAt updatedAt",
   );
 
-  const fullName = [updatedUser.firstName, updatedUser.middleName, updatedUser.lastName]
+  const fullName = [
+    updatedUser.firstName,
+    updatedUser.middleName,
+    updatedUser.lastName,
+  ]
     .filter(Boolean)
     .join(" ");
 
   res.status(200).json({
     status: "success",
     data: {
-      _id: updatedUser._id,
-      name: fullName || updatedUser.email,
-      email: updatedUser.email,
-      phoneNumber: updatedUser.phoneNumber,
-      status: updatedUser.status,
-      role: updatedUser.role,
-      accountType: updatedUser.accountType,
-      updatedAt: updatedUser.updatedAt,
+      _id: user._id,
+      name: fullName || user.email,
+      email: user.email,
+      phoneNumber: user.phoneNumber,
+      status: user.status,
+      role: user.role,
+      accountType: user.accountType,
+      profilePicture: user.profilePicture,
+      isAccountVerified: user.isAccountVerified,
+      isActive: user.isActive,
+      sellerProfile: user.sellerProfile,
+      businessDetails: user.businessDetails,
+      socialLogin: user.socialLogin,
+      provider: user.provider,
+      termsAccepted: user.termsAccepted,
+      receiveMarketingEmails: user.receiveMarketingEmails,
+      bio: user.bio,
+      emailNotifications: user.emailNotifications,
+      pushNotifications: user.pushNotifications,
+      marketingEmails: user.marketingEmails,
+      notificationFrequency: user.notificationFrequency,
+      language: user.language,
+      currency: user.currency,
+      defaultAddress: user.defaultAddress,
+      twoFactorEnabled: user.twoFactorEnabled,
+      twoFactorMethod: user.twoFactorMethod,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
     },
   });
 });
@@ -359,9 +395,10 @@ export const updateUserDetails = catchAsync(async (req, res, next) => {
   if (Object.keys(filteredData).length === 0) {
     return next(
       new AppError(
-        "No valid fields to update. Allowed fields: " + allowedFields.join(", "),
-        400
-      )
+        "No valid fields to update. Allowed fields: " +
+          allowedFields.join(", "),
+        400,
+      ),
     );
   }
 
@@ -370,15 +407,18 @@ export const updateUserDetails = catchAsync(async (req, res, next) => {
     return next(new AppError("User not found", 404));
   }
 
-  const updatedUser = await User.findByIdAndUpdate(
-    id,
-    filteredData,
-    { new: true, runValidators: true }
-  ).select(
-    "firstName middleName lastName email phoneNumber status role bio emailNotifications pushNotifications marketingEmails notificationFrequency language currency defaultAddress createdAt updatedAt"
+  const updatedUser = await User.findByIdAndUpdate(id, filteredData, {
+    new: true,
+    runValidators: true,
+  }).select(
+    "firstName middleName lastName email phoneNumber status role bio emailNotifications pushNotifications marketingEmails notificationFrequency language currency defaultAddress createdAt updatedAt",
   );
 
-  const fullName = [updatedUser.firstName, updatedUser.middleName, updatedUser.lastName]
+  const fullName = [
+    updatedUser.firstName,
+    updatedUser.middleName,
+    updatedUser.lastName,
+  ]
     .filter(Boolean)
     .join(" ");
 
@@ -425,5 +465,29 @@ export const deleteUser = catchAsync(async (req, res, next) => {
   res.status(200).json({
     status: "success",
     message: "User deleted successfully",
+  });
+});
+
+// ==========================
+// TOGGLE USER IS_ACTIVE
+// ==========================
+
+export const toggleIsActive = catchAsync(async (req, res, next) => {
+  const { id } = req.params;
+  const user = await User.findById(id);
+  if (!user) {
+    return next(new AppError("User not found", 404));
+  }
+  const updatedUser = await User.findByIdAndUpdate(id, {
+    isActive: !user.isActive,
+  });
+
+  user.password = undefined;
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      user,
+    },
   });
 });
