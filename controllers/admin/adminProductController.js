@@ -2,6 +2,7 @@ import { Product } from "../../models/seller/product.js";
 import catchAsync from "../../utils/catchasync.js";
 import AppError from "../../utils/apperror.js";
 import APIFeatures from "../../utils/apiFeatures.js";
+import { getDirectUrl } from "../../utils/awsS3.js";
 
 // ==========================
 // GET ALL PRODUCTS WITH FILTERS AND PAGINATION
@@ -138,7 +139,7 @@ export const getAllProducts = catchAsync(async (req, res) => {
       originalPrice: product.originalPrice,
       category: product.category,
       stockQuantity: product.stockQuantity,
-      productImages: product.productImages,
+      productImages: (product.productImages || []).map((img) => getDirectUrl(`products/${img}`)),
       tags: product.tags,
       organic: product.organic,
       featured: product.featured,
@@ -238,20 +239,38 @@ export const getProductById = catchAsync(async (req, res, next) => {
 // ==========================
 export const updateProductApproval = catchAsync(async (req, res, next) => {
   const { id } = req.params;
+  const { approved, status } = req.body; // Expect explicit approval status
 
   const product = await Product.findById(id);
   if (!product) {
     return next(new AppError("Product not found", 404));
   }
 
-  // Toggle the adminApproved status
-  const newApprovalStatus = !product.adminApproved;
+  let newApprovalStatus;
+  let newStatus;
+
+  if (approved !== undefined) {
+    newApprovalStatus = approved;
+  } else {
+    // Fallback to toggle if not provided (though explicit is better)
+    newApprovalStatus = !product.adminApproved;
+  }
+
+  if (newApprovalStatus) {
+    newStatus = 'active';
+  } else {
+    // If rejecting, set to rejected or keep as pending/draft? 
+    // If explicitly rejected, use 'rejected'. If just unapproved (toggle), use 'pending'.
+    // If status is provided in body (e.g. 'rejected'), use that.
+    newStatus = status || 'rejected';
+  }
 
   const updatedProduct = await Product.findByIdAndUpdate(
     id,
     { 
       adminApproved: newApprovalStatus,
-      approvedBy: req.user ? req.user._id : null // Assign admin user ID if available
+      status: newStatus,
+      approvedBy: newApprovalStatus ? (req.user ? req.user._id : null) : null
     },
     { new: true, runValidators: true }
   )

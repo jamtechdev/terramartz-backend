@@ -1,18 +1,24 @@
-// const express = require("express");
-// const productController = require("../../controllers/sellers/productController");
-// const { protect } = require("../../controllers/authController"); // JWT protect middleware
-// const {
-//   restrictToSeller,
-// } = require("../../middleware/seller/restrictToSeller");
+import express from "express";
+import * as productController from "../../controllers/sellers/productController.js";
+import { protect } from "../../controllers/authController.js";
+import { restrictToSeller } from "../../middleware/seller/restrictToSeller.js";
+import { upload } from "../../middleware/seller/uploadMiddleware.js";
 
-// const router = express.Router();
+const router = express.Router();
 
-// // ✅ Public marketplace route (anyone can see)
-// router.get(
-//   "/:slug",
-//   protect,
-//   restrictToSeller,
-//   productController.getProductsBySlug
-// );
+// Protect all routes
+router.use(protect, restrictToSeller);
 
-// module.exports = router;
+// Routes
+router
+  .route("/")
+  .post(upload.array("productImages", 8), productController.createProduct)
+  .get(productController.getAllProducts);
+
+router
+  .route("/:id")
+  .get(productController.getProduct)
+  .patch(upload.array("productImages", 8), productController.updateProduct)
+  .delete(productController.deleteProduct);
+
+export default router;

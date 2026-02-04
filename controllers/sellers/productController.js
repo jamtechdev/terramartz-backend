@@ -27,6 +27,11 @@ export const createProduct = catchAsync(async (req, res, next) => {
 
   try {
     req.body.createdBy = req.user._id;
+    
+    // Force adminApproved to false and status to pending on creation
+    req.body.adminApproved = false;
+    req.body.approvedBy = undefined;
+    req.body.status = 'pending';
 
     // Debug: Log files received and category
     console.log('📸 Files received:', {

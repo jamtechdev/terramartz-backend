@@ -47,6 +47,7 @@ import adminAuthRoutes from "./routes/admin/adminAuthRoutes.js";
 import adminProductRoutes from "./routes/admin/adminProductRoutes.js";
 import adminManagementRoutes from "./routes/admin/adminManagementRoutes.js";
 import sellerPromoCodeRoute from "./routes/seller/promoCodeRoute.js";
+import sellerProductRoutes from "./routes/seller/productsRoutes.js";
 import adminPlatformFeeRoute from "./routes/super-admin/platformFeeRoute.js";
 import adminDashboardRoute from "./routes/super-admin/adminDashboardRoute.js";
 import sellerDeliveryPartnersRoute from "./routes/sellers/deliveryPartnersRoute.js";
@@ -163,6 +164,7 @@ app.use("/api/admin/users", adminUserRoutes);
 app.use("/api/admin/products", adminProductRoutes);
 app.use("/api/admin/accounts", adminManagementRoutes);
 app.use("/api/seller/promo-code", sellerPromoCodeRoute);
+app.use("/api/seller/products", sellerProductRoutes);
 app.use("/api/admin/platform-fee", adminPlatformFeeRoute);
 app.use("/api/admin/dashboard", adminDashboardRoute);
 

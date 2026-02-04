@@ -12,6 +12,14 @@ router.use(protectAdmin('Products', 'View')); // Require at least View access to
 router.route('/')
   .get(protectAdmin('Products', 'View'), adminProductController.getAllProducts);
 
+// GET requested (pending approval) products
+router.route('/requested')
+  .get(protectAdmin('Products', 'View'), (req, res, next) => {
+    req.query.adminApproved = 'false';
+    req.query.status = 'pending';
+    next();
+  }, adminProductController.getAllProducts);
+
 // GET single product by ID
 router.route('/:id')
   .get(protectAdmin('Products', 'View'), adminProductController.getProductById);
