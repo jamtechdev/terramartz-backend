@@ -4,6 +4,7 @@ import {
   getOnboardingLink,
   getAccountStatus,
   getDashboardLink,
+  // checkKYCStatus,
 } from "../../controllers/sellers/stripeConnectController.js";
 import { restrictToSeller } from "../../middleware/seller/restrictToSeller.js";
 import { protect } from "../../controllers/authController.js";
@@ -16,6 +17,8 @@ router.use(restrictToSeller);
 
 // Create Stripe Express Account
 router.post("/create-account", createStripeAccount);
+// Check KYC Status after creating Stripe Express Account
+// router.post("/create-account", checkKYCStatus, createStripeAccount);
 
 // Get Onboarding Link
 router.get("/onboarding-link", getOnboardingLink);

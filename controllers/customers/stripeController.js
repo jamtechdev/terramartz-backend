@@ -7,9 +7,12 @@ import { Purchase } from "../../models/customers/purchase.js";
 import { User } from "../../models/users.js";
 import { TaxConfig } from "../../models/super-admin/taxWithAdminDiscountConfig.js";
 import { ProductPerformance } from "../../models/seller/productPerformance.js";
+import { PromoCode } from "../../models/seller/promoCodes.js";
+import { CustomerPromoCodeUse } from "../../models/customers/customerPromoCodeUse.js";
 import catchAsync from "../../utils/catchasync.js";
 import AppError from "../../utils/apperror.js";
 import { LoyaltyPoint } from "./../../models/customers/loyaltyPoints.js";
+import { PlatformFee } from "../../models/super-admin/platformFee.js";
 
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
@@ -61,7 +64,7 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
   // 💡 Step 2: Calculate subtotal
   const subtotal = productDetailsArr.reduce(
     (sum, p) => sum + p.basePrice * p.quantity,
-    0
+    0,
   );
 
   const seller = await User.findById(sellerId);
@@ -75,22 +78,74 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
   )
     shippingCost = 0;
 
-  // 💡 Step 4: Promo code discount
+  // 💡 Step 4: Promo code discount (using new PromoCode model)
   let promoDiscount = 0;
+  let promoCodeId = null;
+
   if (promoCode) {
-    const matchedPromo = seller.sellerProfile.promoCodes.find(
-      (p) => p.code === promoCode
-    );
-    if (matchedPromo) {
-      const now = new Date();
-      const notExpired =
-        !matchedPromo.expiresAt || new Date(matchedPromo.expiresAt) >= now;
-      if (notExpired && subtotal >= (matchedPromo.minOrderAmount || 0)) {
-        promoDiscount =
-          matchedPromo.type === "fixed"
-            ? matchedPromo.discount
-            : (subtotal * matchedPromo.discount) / 100;
+    try {
+      // Find promo code in the new PromoCode collection
+      const matchedPromo = await PromoCode.findOne({
+        code: promoCode,
+        sellerId: sellerId,
+        isActive: true,
+      });
+
+      if (matchedPromo) {
+        const now = new Date();
+
+        // Check expiration
+        const notExpired =
+          !matchedPromo.expiresAt || new Date(matchedPromo.expiresAt) >= now;
+
+        // Check minimum order amount
+        const meetsMinAmount = subtotal >= (matchedPromo.minOrderAmount || 0);
+
+        // Check total usage limit
+        const withinUsageLimit =
+          !matchedPromo.usageLimit ||
+          matchedPromo.usedCount < matchedPromo.usageLimit;
+
+        // Check per-user limit (if user is authenticated)
+        let withinUserLimit = true;
+        if (req.user && req.user.id) {
+          const userUsageCount = await CustomerPromoCodeUse.countDocuments({
+            user_id: req.user.id,
+            promoCodeId: matchedPromo._id,
+          });
+          withinUserLimit = userUsageCount < (matchedPromo.perUserLimit || 1);
+        }
+
+        if (
+          notExpired &&
+          meetsMinAmount &&
+          withinUsageLimit &&
+          withinUserLimit
+        ) {
+          // Calculate discount
+          promoDiscount =
+            matchedPromo.type === "fixed"
+              ? matchedPromo.discount
+              : (subtotal * matchedPromo.discount) / 100;
+
+          promoCodeId = matchedPromo._id;
+
+          console.log(
+            `✅ Valid promo code applied: ${promoCode}, Discount: $${promoDiscount.toFixed(2)}`,
+          );
+        } else {
+          console.log(`⚠️ Promo code validation failed:`);
+          console.log(`   - Expired: ${!notExpired}`);
+          console.log(`   - Min amount met: ${meetsMinAmount}`);
+          console.log(`   - Within usage limit: ${withinUsageLimit}`);
+          console.log(`   - Within user limit: ${withinUserLimit}`);
+        }
+      } else {
+        console.log(`⚠️ Promo code not found or inactive: ${promoCode}`);
       }
+    } catch (error) {
+      console.error("❌ Error validating promo code:", error);
+      // Continue without promo code if validation fails
     }
   }
 
@@ -111,7 +166,7 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
   // 💡 Step 6: Proportional discount per product + rounding
   const totalBasePrice = productDetailsArr.reduce(
     (sum, p) => sum + p.basePrice * p.quantity,
-    0
+    0,
   );
 
   productDetailsArr.forEach((p) => {
@@ -124,7 +179,7 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
   // 💡 Step 7: Recalculate total after discounts
   const totalAfterDiscount = productDetailsArr.reduce(
     (sum, p) => sum + p.finalPricePerUnit * p.quantity,
-    0
+    0,
   );
 
   // 💡 Step 8: Tax calculation
@@ -142,6 +197,25 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
     seller.sellerProfile?.stripeAccountId &&
     seller.sellerProfile?.stripeAccountStatus === "active";
 
+  // ✅ Step 10.5: Fetch and calculate platform fee
+  const platformFeeConfig = await PlatformFee.findOne();
+  let platformFeeAmount = 0;
+
+  if (platformFeeConfig && hasStripeConnect) {
+    if (platformFeeConfig.type === "fixed") {
+      platformFeeAmount = platformFeeConfig.fee;
+    } else if (platformFeeConfig.type === "percentage") {
+      // Calculate percentage of total amount
+      platformFeeAmount = (totalAmount * platformFeeConfig.fee) / 100;
+    }
+    // Round to 2 decimals
+    platformFeeAmount = Math.round(platformFeeAmount * 100) / 100;
+
+    console.log(
+      `💰 Platform fee calculated: $${platformFeeAmount.toFixed(2)} (${platformFeeConfig.type})`,
+    );
+  }
+
   // ✅ Step 11: Create Stripe PaymentIntent
   const paymentIntentConfig = {
     amount: Math.round(totalAmount * 100),
@@ -154,24 +228,35 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
           product: p.product._id,
           quantity: p.quantity,
           price: p.finalPricePerUnit, // ✅ per-unit paid price
-        }))
+        })),
       ),
       shippingAddress: JSON.stringify(shippingAddress),
-      promoDiscount,
-      adminDiscount,
-      taxAmount,
-      shippingCost,
-      paymentType: hasStripeConnect ? "direct_charge" : "platform", // Track payment type
+      promoDiscount: promoDiscount.toString(),
+      adminDiscount: adminDiscount.toString(),
+      taxAmount: taxAmount.toString(),
+      shippingCost: shippingCost.toString(),
+      platformFeeAmount: platformFeeAmount.toString(), // ✅ Store for refund/chargeback handling
+      platformFeeType: platformFeeConfig?.type || "none", // ✅ Store fee type
+      paymentType: hasStripeConnect ? "direct_charge" : "platform",
+      promoCodeId: promoCodeId || "",
     },
   };
 
-  // If seller has connected Stripe account, use Direct Charge
+  // ✅ If seller has connected Stripe account, use Direct Charge with application fee
   if (hasStripeConnect) {
     paymentIntentConfig.transfer_data = {
       destination: seller.sellerProfile.stripeAccountId,
     };
-    // Platform fee = 0 for now (can be added later)
-    // paymentIntentConfig.application_fee_amount = 0;
+
+    // ✅ Apply platform fee (amount is in cents)
+    if (platformFeeAmount > 0) {
+      paymentIntentConfig.application_fee_amount = Math.round(
+        platformFeeAmount * 100,
+      );
+      console.log(
+        `✅ Application fee set: ${paymentIntentConfig.application_fee_amount} cents`,
+      );
+    }
   }
 
   const paymentIntent = await stripe.paymentIntents.create(paymentIntentConfig);
@@ -182,17 +267,14 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
 
   if (shouldSkipWebhook) {
     try {
-      // Simulate successful payment for local development
       const mockPaymentIntent = {
         id: paymentIntent.id,
         amount: paymentIntent.amount,
         metadata: paymentIntent.metadata,
       };
 
-      // Directly create purchase (skip webhook)
       await createPurchaseFromPaymentIntent(mockPaymentIntent);
 
-      // Fetch the created purchase to get orderId
       const createdPurchase = await Purchase.findOne({
         paymentIntentId: paymentIntent.id,
       });
@@ -201,12 +283,15 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
         status: "success",
         clientSecret: paymentIntent.client_secret,
         breakdown: {
-          subtotal,
-          promoDiscount,
-          adminDiscount,
-          shippingCost,
-          taxAmount,
-          totalAmount,
+          subtotal: Math.round(subtotal * 100) / 100,
+          promoDiscount: Math.round(promoDiscount * 100) / 100,
+          adminDiscount: Math.round(adminDiscount * 100) / 100,
+          shippingCost: Math.round(shippingCost * 100) / 100,
+          taxAmount: Math.round(taxAmount * 100) / 100,
+          platformFee: Math.round(platformFeeAmount * 100) / 100, // ✅ Include platform fee
+          totalAmount: Math.round(totalAmount * 100) / 100,
+          sellerReceives:
+            Math.round((totalAmount - platformFeeAmount) * 100) / 100, // ✅ What seller gets
         },
         message: "Payment completed (webhook skipped for local development)",
         orderCreated: true,
@@ -215,7 +300,6 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
       });
     } catch (err) {
       console.error("⚠️ Failed to create purchase directly:", err);
-      // Continue with normal flow even if direct creation fails
     }
   }
 
@@ -223,12 +307,14 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
     status: "success",
     clientSecret: paymentIntent.client_secret,
     breakdown: {
-      subtotal,
-      promoDiscount,
-      adminDiscount,
-      shippingCost,
-      taxAmount,
-      totalAmount,
+      subtotal: Math.round(subtotal * 100) / 100,
+      promoDiscount: Math.round(promoDiscount * 100) / 100,
+      adminDiscount: Math.round(adminDiscount * 100) / 100,
+      shippingCost: Math.round(shippingCost * 100) / 100,
+      taxAmount: Math.round(taxAmount * 100) / 100,
+      platformFee: Math.round(platformFeeAmount * 100) / 100, // ✅ Include platform fee
+      totalAmount: Math.round(totalAmount * 100) / 100,
+      sellerReceives: Math.round((totalAmount - platformFeeAmount) * 100) / 100, // ✅ What seller gets
     },
   });
 });
@@ -238,9 +324,9 @@ export const webhookPayment = async (req, res, next) => {
   // 🔹 Skip webhook in development mode (local testing)
   if (process.env.NODE_ENV === "development") {
     console.log("⚠️ Webhook skipped in development mode");
-    return res.status(200).json({ 
-      received: true, 
-      message: "Webhook skipped in development mode" 
+    return res.status(200).json({
+      received: true,
+      message: "Webhook skipped in development mode",
     });
   }
 
@@ -251,7 +337,7 @@ export const webhookPayment = async (req, res, next) => {
     event = stripe.webhooks.constructEvent(
       req.body,
       signature,
-      process.env.STRIPE_WEBHOOK_SECRET
+      process.env.STRIPE_WEBHOOK_SECRET,
     );
   } catch (err) {
     console.error("❌ Webhook verification failed:", err.message);
@@ -274,9 +360,8 @@ export const webhookPayment = async (req, res, next) => {
   if (event.type === "account.updated") {
     try {
       const account = event.data.object;
-      const { updateAccountStatus } = await import(
-        "../sellers/stripeConnectController.js"
-      );
+      const { updateAccountStatus } =
+        await import("../sellers/stripeConnectController.js");
       await updateAccountStatus(account.id, account);
       console.log("✅ Account status updated:", account.id);
     } catch (err) {
@@ -288,10 +373,10 @@ export const webhookPayment = async (req, res, next) => {
   if (event.type === "checkout.session.completed") {
     try {
       const session = event.data.object;
-      
+
       // Retrieve the full session to get line items
       const fullSession = await stripe.checkout.sessions.retrieve(session.id, {
-        expand: ['line_items'],
+        expand: ["line_items"],
       });
 
       // Create purchase from checkout session
@@ -301,11 +386,17 @@ export const webhookPayment = async (req, res, next) => {
       let shippingAddress = metadata.shippingAddress
         ? JSON.parse(metadata.shippingAddress)
         : {};
-      
+
+      const platformFeeAmount = metadata.platformFeeAmount
+        ? Number(metadata.platformFeeAmount)
+        : 0;
+
       // Add taxAmount and shippingCost to shippingAddress for invoice display
       const taxAmount = metadata.taxAmount ? Number(metadata.taxAmount) : 0;
-      const shippingCost = metadata.shippingCost ? Number(metadata.shippingCost) : 0;
-      
+      const shippingCost = metadata.shippingCost
+        ? Number(metadata.shippingCost)
+        : 0;
+
       shippingAddress.taxAmount = taxAmount;
       shippingAddress.shippingCost = shippingCost;
 
@@ -321,14 +412,13 @@ export const webhookPayment = async (req, res, next) => {
         if (!product) continue;
 
         // Update stock
-        await Product.findByIdAndUpdate(
-          item.product,
-          { $inc: { stockQuantity: -item.quantity } }
-        );
+        await Product.findByIdAndUpdate(item.product, {
+          $inc: { stockQuantity: -item.quantity },
+        });
 
         // Purchase model expects seller as String, so convert to String
         const finalSellerId = String(product.createdBy || product.seller);
-        
+
         purchaseProducts.push({
           product: product._id,
           quantity: item.quantity,
@@ -350,14 +440,20 @@ export const webhookPayment = async (req, res, next) => {
 
       // Ensure buyer is stored as String (Purchase schema expects String)
       const buyerString = String(buyer);
-      console.log("📦 Webhook: Creating order with buyer:", buyerString, "Type:", typeof buyerString);
-      
+      console.log(
+        "📦 Webhook: Creating order with buyer:",
+        buyerString,
+        "Type:",
+        typeof buyerString,
+      );
+
       await Purchase.create({
         orderId,
         buyer: buyerString, // Convert to string
         products: purchaseProducts,
         shippingAddress,
         totalAmount,
+        platformFeeAmount,
         paymentStatus: "paid",
         status: "new",
         paymentIntentId: session.payment_intent,
@@ -382,9 +478,82 @@ export const webhookPayment = async (req, res, next) => {
         // Don't fail the order if cart clearing fails
       }
 
+      // Record promo code usage if applicable
+      const sessionMetadata = session.metadata || {};
+      const usedPromoCodeId = sessionMetadata.promoCodeId;
+
+      if (usedPromoCodeId && buyer) {
+        try {
+          // Record the promo code usage
+          await CustomerPromoCodeUse.create({
+            user_id: buyer,
+            promoCodeId: usedPromoCodeId,
+            purchase_id: order._id,
+          });
+
+          // Update promo code usage count
+          await PromoCode.findByIdAndUpdate(usedPromoCodeId, {
+            $inc: { usedCount: 1 },
+          });
+
+          console.log(
+            `✅ Promo code usage recorded in webhook: User ${buyer} used promo ${usedPromoCodeId}`,
+          );
+        } catch (promoError) {
+          console.error(
+            "⚠️ Failed to record promo code usage in webhook:",
+            promoError,
+          );
+          // Don't fail the order if promo code tracking fails
+        }
+      }
+
       console.log("✅ Purchase created from checkout session:", orderId);
     } catch (err) {
       console.error("⚠️ Failed to create purchase from checkout session:", err);
+    }
+  }
+  // 🔹 Handle Refunds
+  if (event.type === "charge.refunded") {
+    try {
+      const charge = event.data.object;
+      await handleRefund(charge);
+      console.log("✅ Refund processed for charge:", charge.id);
+    } catch (err) {
+      console.error("⚠️ Failed to process refund:", err);
+    }
+  }
+
+  // 🔹 Handle Dispute Created (Chargeback initiated)
+  if (event.type === "charge.dispute.created") {
+    try {
+      const dispute = event.data.object;
+      await handleDisputeCreated(dispute);
+      console.log("⚠️ Dispute created for charge:", dispute.charge);
+    } catch (err) {
+      console.error("⚠️ Failed to handle dispute creation:", err);
+    }
+  }
+
+  // 🔹 Handle Dispute Updated
+  if (event.type === "charge.dispute.updated") {
+    try {
+      const dispute = event.data.object;
+      await handleDisputeUpdated(dispute);
+      console.log("✅ Dispute updated for charge:", dispute.charge);
+    } catch (err) {
+      console.error("⚠️ Failed to handle dispute update:", err);
+    }
+  }
+
+  // 🔹 Handle Dispute Closed (Chargeback resolved)
+  if (event.type === "charge.dispute.closed") {
+    try {
+      const dispute = event.data.object;
+      await handleDisputeClosed(dispute);
+      console.log("✅ Dispute closed for charge:", dispute.charge);
+    } catch (err) {
+      console.error("⚠️ Failed to handle dispute closure:", err);
     }
   }
 
@@ -404,14 +573,21 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
   console.log(`Products count: ${products.length}`);
   console.log(`Shipping method: ${shippingMethod}`);
   products.forEach((p, i) => {
-    console.log(`Product ${i + 1}: ID=${p.product}, Qty=${p.quantity}, Price=${p.price !== undefined ? '$' + p.price : 'NOT PROVIDED'}`);
+    console.log(
+      `Product ${i + 1}: ID=${p.product}, Qty=${p.quantity}, Price=${p.price !== undefined ? "$" + p.price : "NOT PROVIDED"}`,
+    );
   });
   console.log(`=============================================\n`);
 
   let sellerId = null;
   const lineItems = [];
 
-  // 💡 Step 1: Fetch products & build line items
+  // Initialize promo code variables
+  let promoDiscount = 0;
+  let promoCodeId = null;
+
+  // 💡 Step 1: Fetch products & collect for later processing
+  const productDataList = [];
   for (const item of products) {
     const product = await Product.findById(item.product);
     if (!product) return next(new AppError("Product not found", 404));
@@ -420,18 +596,23 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
 
     // ALWAYS use price from request (from cart) - this ensures frontend and backend match
     let basePrice = item.price ? Number(item.price) : Number(product.price);
-    
+
     // If price from cart is provided, use it directly (cart already has correct discounted price)
     if (item.price) {
       basePrice = Number(item.price);
-      console.log(`Using price from cart for product ${product._id}: $${basePrice} (DB price: $${product.price})`);
+      console.log(
+        `Using price from cart for product ${product._id}: $${basePrice} (DB price: $${product.price})`,
+      );
     } else {
       // Fallback: calculate from product if price not provided
-      console.log(`Price not provided from cart for product ${product._id}, using DB price: $${product.price}`);
+      console.log(
+        `Price not provided from cart for product ${product._id}, using DB price: $${product.price}`,
+      );
       basePrice = Number(product.price);
-      
+
       // Apply discount if needed
-      if (product.discount &&
+      if (
+        product.discount &&
         (!product.discountExpires ||
           new Date(product.discountExpires) >= new Date())
       ) {
@@ -442,31 +623,157 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
         if (basePrice < 0) basePrice = 0;
       }
     }
-    
+
     // Ensure price is valid
     if (!basePrice || basePrice <= 0) {
-      console.warn(`Invalid price for product ${product._id}, using DB price as fallback`);
+      console.warn(
+        `Invalid price for product ${product._id}, using DB price as fallback`,
+      );
       basePrice = Number(product.price) || 0;
     }
 
+    productDataList.push({
+      product,
+      basePrice,
+      quantity: item.quantity,
+      originalItem: item,
+    });
+  }
+
+  // Calculate subtotal for promo code validation
+  const productsSubtotal = productDataList.reduce(
+    (sum, pData) => sum + pData.basePrice * pData.quantity,
+    0,
+  );
+
+  const seller = await User.findById(sellerId);
+  if (!seller) return next(new AppError("Seller not found", 404));
+
+  // 💡 Promo code validation (using new PromoCode model) - added after sellerId and subtotal are established
+  // Variables promoDiscount and promoCodeId already declared earlier in function
+
+  if (promoCode && sellerId) {
+    // Only validate if we have a seller
+    try {
+      // Find promo code in the new PromoCode collection
+      const matchedPromo = await PromoCode.findOne({
+        code: promoCode,
+        sellerId: sellerId, // Match promo code to seller
+        isActive: true,
+      });
+
+      if (matchedPromo) {
+        const now = new Date();
+
+        // Check expiration
+        const notExpired =
+          !matchedPromo.expiresAt || new Date(matchedPromo.expiresAt) >= now;
+
+        // Check total usage limit
+        const withinUsageLimit =
+          !matchedPromo.usageLimit ||
+          matchedPromo.usedCount < matchedPromo.usageLimit;
+
+        // Check per-user limit (if user is authenticated)
+        let withinUserLimit = true;
+        if (req.user && req.user.id) {
+          const userUsageCount = await CustomerPromoCodeUse.countDocuments({
+            user_id: req.user.id,
+            promoCodeId: matchedPromo._id,
+          });
+          withinUserLimit = userUsageCount < (matchedPromo.perUserLimit || 1);
+        }
+
+        // Check minimum order amount
+        const meetsMinAmount =
+          productsSubtotal >= (matchedPromo.minOrderAmount || 0);
+
+        if (
+          notExpired &&
+          withinUsageLimit &&
+          withinUserLimit &&
+          meetsMinAmount
+        ) {
+          // Calculate the actual discount based on subtotal
+          promoDiscount =
+            matchedPromo.type === "fixed"
+              ? matchedPromo.discount
+              : (productsSubtotal * matchedPromo.discount) / 100;
+
+          promoCodeId = matchedPromo._id;
+          console.log(
+            `✅ Valid promo code applied: ${promoCode}, Discount: $${promoDiscount.toFixed(2)}`,
+          );
+        } else {
+          console.log(`⚠️ Promo code validation failed:`);
+          console.log(`   - Expired: ${!notExpired}`);
+          console.log(`   - Within usage limit: ${withinUsageLimit}`);
+          console.log(`   - Within user limit: ${withinUserLimit}`);
+          console.log(`   - Meets minimum amount: ${meetsMinAmount}`);
+          if (!meetsMinAmount) {
+            console.log(
+              `   - Subtotal: $${productsSubtotal}, Min required: $${matchedPromo.minOrderAmount || 0}`,
+            );
+          }
+        }
+      } else {
+        console.log(
+          `⚠️ Promo code not found or inactive for seller: ${promoCode}`,
+        );
+      }
+    } catch (error) {
+      console.error("❌ Error validating promo code:", error);
+      // Continue without promo code if validation fails
+    }
+  }
+
+  // 💡 Step 2: Apply proportional discount to each product and build line items
+  const totalBasePrice = productDataList.reduce(
+    (sum, pData) => sum + pData.basePrice * pData.quantity,
+    0,
+  );
+
+  // Apply proportional discount to each product and build line items
+  for (const pData of productDataList) {
+    const { product, basePrice, quantity, originalItem } = pData;
+
+    // Calculate proportional discount for this product
+    let finalUnitPrice = basePrice;
+    if (promoDiscount > 0 && totalBasePrice > 0) {
+      const proportion = (basePrice * quantity) / totalBasePrice;
+      const discountShare = promoDiscount * proportion;
+      finalUnitPrice = basePrice - discountShare / quantity;
+      finalUnitPrice = Math.max(0, Math.round(finalUnitPrice * 100) / 100); // 2 decimals, ensure non-negative
+    }
+
     // Ensure product name is not empty (Stripe requirement)
-    const productName = (product.name && typeof product.name === 'string' && product.name.trim()) 
-      ? product.name.trim() 
-      : `Product ${String(product._id)}`;
-    
+    const productName =
+      product.name && typeof product.name === "string" && product.name.trim()
+        ? product.name.trim()
+        : `Product ${String(product._id)}`;
+
     // Ensure description is valid (max 500 chars for Stripe)
     let productDescription = "";
-    if (product.description && typeof product.description === 'string') {
+    if (product.description && typeof product.description === "string") {
       productDescription = product.description.trim().substring(0, 500);
     }
 
     // Validate product name length (Stripe requires 1-500 chars)
     if (productName.length < 1 || productName.length > 500) {
-      console.error(`Invalid product name length for product ${product._id}: ${productName.length}`);
-      return next(new AppError(`Product name validation failed for product ${product._id}`, 400));
+      console.error(
+        `Invalid product name length for product ${product._id}: ${productName.length}`,
+      );
+      return next(
+        new AppError(
+          `Product name validation failed for product ${product._id}`,
+          400,
+        ),
+      );
     }
 
-    console.log(`Adding product to line items: ${productName}, Price: ${basePrice}, Qty: ${item.quantity}`);
+    console.log(
+      `Adding product to line items: ${productName}, Original Price: ${basePrice}, Final Price: ${finalUnitPrice}, Qty: ${quantity}`,
+    );
 
     lineItems.push({
       price_data: {
@@ -474,46 +781,53 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
         product_data: {
           name: productName,
           description: productDescription,
-          images: product.productImages && Array.isArray(product.productImages) && product.productImages.length > 0 
-            ? [String(product.productImages[0])] 
-            : [],
+          images:
+            product.productImages &&
+            Array.isArray(product.productImages) &&
+            product.productImages.length > 0
+              ? [String(product.productImages[0])]
+              : [],
         },
-        unit_amount: Math.round(basePrice * 100), // Convert to cents
+        unit_amount: Math.round(finalUnitPrice * 100), // Convert to cents with discount applied
       },
-      quantity: item.quantity,
+      quantity: quantity,
     });
   }
 
-  // 💡 Step 2: Calculate subtotal (products only, before shipping and tax)
-  const productsSubtotal = lineItems.reduce(
-    (sum, item) => sum + (item.price_data.unit_amount * item.quantity),
-    0
-  ) / 100;
-
-  const seller = await User.findById(sellerId);
-  if (!seller) return next(new AppError("Seller not found", 404));
+  // Recalculate subtotal with discounts applied to line items
+  const productsSubtotalWithDiscount =
+    lineItems.reduce(
+      (sum, item) => sum + item.price_data.unit_amount * item.quantity,
+      0,
+    ) / 100;
 
   // 💡 Step 3: Shipping cost based on method (must match frontend calculation)
   let shippingCost = 0;
-  if (shippingMethod === 'express') {
+  if (shippingMethod === "express") {
     shippingCost = 12.99;
-  } else if (shippingMethod === 'overnight') {
+  } else if (shippingMethod === "overnight") {
     shippingCost = 24.99;
   } else {
     // Standard shipping - match frontend logic: free if subtotal > 50, else 5.99
-    if (productsSubtotal > 50) {
+    if (productsSubtotalWithDiscount > 50) {
       shippingCost = 0;
     } else {
       // Check seller's free shipping threshold first, then fallback to 5.99
-      if (seller.sellerProfile.freeShippingThreshold && productsSubtotal >= seller.sellerProfile.freeShippingThreshold) {
+      if (
+        seller.sellerProfile.freeShippingThreshold &&
+        productsSubtotalWithDiscount >=
+          seller.sellerProfile.freeShippingThreshold
+      ) {
         shippingCost = 0;
       } else {
         shippingCost = seller.sellerProfile.shippingCharges || 5.99;
       }
     }
   }
-  
-  console.log(`Shipping calculation: Method=${shippingMethod}, Subtotal=$${productsSubtotal.toFixed(2)}, Shipping=$${shippingCost.toFixed(2)}`);
+
+  console.log(
+    `Shipping calculation: Method=${shippingMethod}, Subtotal=$${productsSubtotalWithDiscount.toFixed(2)}, Shipping=$${shippingCost.toFixed(2)}`,
+  );
 
   // Add shipping as line item if > 0
   if (shippingCost > 0) {
@@ -521,7 +835,7 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
       price_data: {
         currency: "usd",
         product_data: {
-          name: `Shipping (${shippingMethod || 'standard'})`,
+          name: `Shipping (${shippingMethod || "standard"})`,
         },
         unit_amount: Math.round(shippingCost * 100),
       },
@@ -529,17 +843,17 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
     });
   }
 
-  // 💡 Step 4: Calculate tax (on products subtotal only, before shipping)
+  // 💡 Step 4: Calculate tax
   const taxConfig = await TaxConfig.findOne({ isActive: true });
   let taxAmount = 0;
-  let taxRate = 0.08; // Default 8% if no tax config
-  
+  let taxRate = 0.08;
+
   if (taxConfig && taxConfig.rate) {
     taxRate = taxConfig.rate / 100;
   }
-  
-  // Calculate tax on products subtotal only (not including shipping)
-  taxAmount = productsSubtotal * taxRate;
+
+  const taxableAmount = productsSubtotalWithDiscount;
+  taxAmount = taxableAmount * taxRate;
   taxAmount = Math.round(taxAmount * 100) / 100;
 
   if (taxAmount > 0) {
@@ -555,78 +869,126 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
     });
   }
 
-  // Calculate final total for logging
-  const finalTotal = productsSubtotal + shippingCost + taxAmount;
+  // Calculate final total
+  const totalAfterDiscount = productsSubtotalWithDiscount;
+  const finalTotal = totalAfterDiscount + shippingCost + taxAmount;
+
+  // ✅ Step 4.5: Calculate Platform Fee
+  const hasStripeConnect =
+    seller.sellerProfile?.stripeAccountId &&
+    seller.sellerProfile?.stripeAccountStatus === "active";
+
+  let platformFeeAmount = 0;
+  const platformFeeConfig = await PlatformFee.findOne();
+  console.log("Platform fee 0==>");
+
+  // if (platformFeeConfig && hasStripeConnect) {
+  console.log("Platform fee 1==>");
+
+  if (platformFeeConfig.type === "fixed") {
+    console.log("Platform fee 2==>");
+
+    platformFeeAmount = platformFeeConfig.fee;
+  } else if (platformFeeConfig.type === "percentage") {
+    platformFeeAmount = (finalTotal * platformFeeConfig.fee) / 100;
+  }
+  platformFeeAmount = Math.round(platformFeeAmount * 100) / 100;
+  console.log("Platform fee 3==>", platformFeeAmount);
+
+  console.log(
+    `💰 Platform fee calculated: $${platformFeeAmount.toFixed(2)} (${platformFeeConfig.type})`,
+  );
+  // } else {
+  //   console.log(
+  //     `💰 No platform fee (Stripe Connect not enabled for seller or no fee config)`,
+  //   );
+  // }
+
   console.log(`\n========== CHECKOUT SESSION CALCULATION ==========`);
-  console.log(`Products Subtotal: $${productsSubtotal.toFixed(2)}`);
+  console.log(`Products Subtotal: $${productsSubtotalWithDiscount.toFixed(2)}`);
+  if (promoDiscount > 0) {
+    console.log(`Promo Discount: -$${promoDiscount.toFixed(2)}`);
+  }
   console.log(`Shipping (${shippingMethod}): $${shippingCost.toFixed(2)}`);
-  console.log(`Tax (${(taxRate * 100).toFixed(2)}% on products): $${taxAmount.toFixed(2)}`);
+  console.log(
+    `Tax (${(taxRate * 100).toFixed(2)}% on discounted total): $${taxAmount.toFixed(2)}`,
+  );
+  console.log(`Platform Fee: $${platformFeeAmount.toFixed(2)}`); // ✅ Log platform fee
   console.log(`TOTAL: $${finalTotal.toFixed(2)}`);
-  console.log(`================================================\n`);
+  console.log(
+    `Seller Receives: $${(finalTotal - platformFeeAmount).toFixed(2)}`,
+  ); // ✅ Log seller amount
+  console.log(`================================================`);
 
   // 💡 Step 5: Create metadata for order creation
-  // Build products with prices for metadata (use same prices as line items)
   const productsWithPrices = [];
-  // We already calculated basePrice in the loop above, so we need to store it
-  // Let's rebuild with the same logic
   for (const item of products) {
     const product = await Product.findById(item.product);
     if (!product) continue;
-    
-    // Use same price calculation as line items
+
     let itemPrice = item.price ? Number(item.price) : Number(product.price);
-    
-    // Apply discount if price not provided from cart
-    if (!item.price && product.discount &&
-      (!product.discountExpires || new Date(product.discountExpires) >= new Date())
+
+    if (
+      !item.price &&
+      product.discount &&
+      (!product.discountExpires ||
+        new Date(product.discountExpires) >= new Date())
     ) {
       if (product.discountType === "fixed") itemPrice -= product.discount;
       else if (product.discountType === "percentage")
         itemPrice -= (itemPrice * product.discount) / 100;
       if (itemPrice < 0) itemPrice = 0;
     }
-    
-    // Ensure price is valid
+
     if (!itemPrice || itemPrice <= 0) {
       itemPrice = Number(product.price) || 0;
     }
-    
+
     productsWithPrices.push({
       product: String(item.product),
       quantity: Number(item.quantity),
       price: Number(itemPrice),
     });
   }
-  
-  console.log("📦 Metadata products:", JSON.stringify(productsWithPrices, null, 2));
-  
-  // Use consistent user ID format
+
+  console.log(
+    "📦 Metadata products:",
+    JSON.stringify(productsWithPrices, null, 2),
+  );
+
   const userId = String(req.user._id || req.user.id);
-  
+
   const metadata = {
     buyer: userId,
     products: JSON.stringify(productsWithPrices),
     shippingAddress: JSON.stringify(shippingAddress),
-    shippingMethod: shippingMethod || 'standard',
+    shippingMethod: shippingMethod || "standard",
     shippingCost: shippingCost.toString(),
     taxAmount: taxAmount.toString(),
+    platformFeeAmount: platformFeeAmount.toString(), // ✅ Add platform fee to metadata
+    platformFeeType: platformFeeConfig?.type || "none", // ✅ Store fee type
+    promoCodeId: promoCodeId || null,
   };
-  
+
   console.log("📦 Metadata buyer ID:", userId);
+  console.log("💰 Metadata platform fee:", platformFeeAmount); // ✅ Log
 
   // 💡 Step 6: Validate line items before creating session
   if (lineItems.length === 0) {
     return next(new AppError("No valid line items to process", 400));
   }
 
-  // Validate all line items have required fields
   for (let i = 0; i < lineItems.length; i++) {
     const item = lineItems[i];
-    if (!item.price_data?.product_data?.name || 
-        typeof item.price_data.product_data.name !== 'string' ||
-        item.price_data.product_data.name.trim().length === 0) {
+    if (
+      !item.price_data?.product_data?.name ||
+      typeof item.price_data.product_data.name !== "string" ||
+      item.price_data.product_data.name.trim().length === 0
+    ) {
       console.error(`Line item ${i} missing or invalid product name:`, item);
-      return next(new AppError(`Line item ${i + 1} is missing product name`, 400));
+      return next(
+        new AppError(`Line item ${i + 1} is missing product name`, 400),
+      );
     }
     if (!item.price_data?.unit_amount || item.price_data.unit_amount <= 0) {
       console.error(`Line item ${i} has invalid price:`, item);
@@ -634,26 +996,27 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
     }
   }
 
-  console.log(`Creating Stripe Checkout Session with ${lineItems.length} line items`);
+  console.log(
+    `Creating Stripe Checkout Session with ${lineItems.length} line items`,
+  );
 
   // 💡 Step 7: Find or create Stripe customer by email
   const customerEmail = shippingAddress?.email || req.user.email;
   let stripeCustomerId = null;
-  
+
   if (customerEmail) {
     try {
-      // Search for existing customer by email
       const existingCustomers = await stripe.customers.list({
         email: customerEmail,
         limit: 1,
       });
-      
+
       if (existingCustomers.data.length > 0) {
-        // Use existing customer
         stripeCustomerId = existingCustomers.data[0].id;
-        console.log(`✅ Found existing Stripe customer: ${stripeCustomerId} for email: ${customerEmail}`);
+        console.log(
+          `✅ Found existing Stripe customer: ${stripeCustomerId} for email: ${customerEmail}`,
+        );
       } else {
-        // Create new customer
         const newCustomer = await stripe.customers.create({
           email: customerEmail,
           name: req.user.name || shippingAddress?.name,
@@ -662,43 +1025,42 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
           },
         });
         stripeCustomerId = newCustomer.id;
-        console.log(`✅ Created new Stripe customer: ${stripeCustomerId} for email: ${customerEmail}`);
+        console.log(
+          `✅ Created new Stripe customer: ${stripeCustomerId} for email: ${customerEmail}`,
+        );
       }
     } catch (error) {
-      console.error('❌ Error finding/creating Stripe customer:', error);
-      // Continue without customer_id if there's an error
+      console.error("❌ Error finding/creating Stripe customer:", error);
     }
   }
 
   // 💡 Step 8: Create Stripe Checkout Session
-  // Get frontend URL from environment or detect from request origin
   const getFrontendUrl = () => {
-    // Priority: 1. Environment variable, 2. Request origin, 3. Default localhost
     if (process.env.FRONTEND_URL) {
       return process.env.FRONTEND_URL;
     }
-    
-    // Try to get from request origin (for production)
+
     const origin = req.headers.origin || req.headers.referer;
     if (origin) {
       try {
         const url = new URL(origin);
-        // If it's not localhost, use it
-        if (!url.hostname.includes('localhost') && !url.hostname.includes('127.0.0.1')) {
+        if (
+          !url.hostname.includes("localhost") &&
+          !url.hostname.includes("127.0.0.1")
+        ) {
           return `${url.protocol}//${url.host}`;
         }
       } catch (e) {
-        console.warn('Could not parse origin:', origin);
+        console.warn("Could not parse origin:", origin);
       }
     }
-    
-    // Fallback to localhost for development
-    return 'http://localhost:3000';
+
+    return "http://localhost:3000";
   };
-  
+
   const frontendUrl = getFrontendUrl();
-  console.log('🌐 Frontend URL for Stripe redirect:', frontendUrl);
-  
+  console.log("🌐 Frontend URL for Stripe redirect:", frontendUrl);
+
   const sessionConfig = {
     payment_method_types: ["card"],
     line_items: lineItems,
@@ -706,16 +1068,30 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
     success_url: `${frontendUrl}/order-success?session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${frontendUrl}/order-cancel`,
     metadata: metadata,
-    // Removed shipping_address_collection - shipping address is already collected before Stripe
   };
-  
-  // Add customer_id if we have one, otherwise use customer_email
+
+  // ✅ Add Stripe Connect configuration if seller has connected account
+  if (hasStripeConnect && platformFeeAmount > 0) {
+    sessionConfig.payment_intent_data = {
+      application_fee_amount: Math.round(platformFeeAmount * 100), // ✅ Platform fee in cents
+      transfer_data: {
+        destination: seller.sellerProfile.stripeAccountId, // ✅ Transfer to seller's account
+      },
+    };
+
+    console.log(`✅ Stripe Connect configured:`);
+    console.log(`   Destination: ${seller.sellerProfile.stripeAccountId}`);
+    console.log(
+      `   Application Fee: ${Math.round(platformFeeAmount * 100)} cents`,
+    );
+  }
+
   if (stripeCustomerId) {
     sessionConfig.customer = stripeCustomerId;
   } else {
     sessionConfig.customer_email = customerEmail;
   }
-  
+
   const session = await stripe.checkout.sessions.create(sessionConfig);
 
   res.status(200).json({
@@ -726,7 +1102,9 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
       productsSubtotal: productsSubtotal,
       shippingCost: shippingCost,
       taxAmount: taxAmount,
+      platformFee: platformFeeAmount, // ✅ Include platform fee in response
       total: finalTotal,
+      sellerReceives: finalTotal - platformFeeAmount, // ✅ What seller receives
     },
   });
 });
@@ -758,7 +1136,7 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
   // Get metadata from session
   const metadata = session.metadata || {};
   const metadataBuyer = metadata.buyer;
-  
+
   console.log("\n========== CREATE ORDER IMMEDIATELY ==========");
   console.log("📦 Session ID:", sessionId);
   console.log("📦 Metadata buyer from session:", metadataBuyer);
@@ -766,42 +1144,53 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
   console.log("📦 User ID formats:", { _id: req.user._id, id: req.user.id });
   console.log("📦 Payment status:", session.payment_status);
   console.log("📦 Amount total:", session.amount_total);
-  
+
   // Use metadata buyer if available, otherwise use current user
   // Purchase model expects buyer as String, so convert to string
-  const finalBuyerString = metadataBuyer ? String(metadataBuyer) : String(buyer);
-  
+  const finalBuyerString = metadataBuyer
+    ? String(metadataBuyer)
+    : String(buyer);
+
   // Verify buyer matches (for security) - log warning but proceed
   const buyerStr = String(buyer);
-  const metadataBuyerStr = String(metadataBuyer || '');
-  if (metadataBuyer && buyerStr !== metadataBuyerStr && 
-      req.user._id && String(req.user._id) !== metadataBuyerStr && 
-      req.user.id && String(req.user.id) !== metadataBuyerStr) {
+  const metadataBuyerStr = String(metadataBuyer || "");
+  if (
+    metadataBuyer &&
+    buyerStr !== metadataBuyerStr &&
+    req.user._id &&
+    String(req.user._id) !== metadataBuyerStr &&
+    req.user.id &&
+    String(req.user.id) !== metadataBuyerStr
+  ) {
     console.warn("⚠️ Buyer ID mismatch detected!");
     console.warn("   Metadata buyer:", metadataBuyerStr);
     console.warn("   Current user:", buyerStr);
     console.warn("   Using metadata buyer for order creation");
   }
-  
+
   console.log("📦 Final buyer ID to use (as string):", finalBuyerString);
   console.log("==============================================\n");
-  
+
   // Check if order already exists (try multiple buyer ID formats)
   const existingOrder = await Purchase.findOne({
     checkoutSessionId: sessionId,
   });
-  
+
   // Also check by buyer if order found
   if (existingOrder) {
     const orderBuyer = String(existingOrder.buyer);
     const currentBuyer = finalBuyerString;
-    
+
     // If order exists and buyer matches (or session ID matches), return it
-    if (orderBuyer === currentBuyer || orderBuyer === buyerStr || 
-        orderBuyer === String(req.user._id) || orderBuyer === String(req.user.id) ||
-        existingOrder.checkoutSessionId === sessionId) {
+    if (
+      orderBuyer === currentBuyer ||
+      orderBuyer === buyerStr ||
+      orderBuyer === String(req.user._id) ||
+      orderBuyer === String(req.user.id) ||
+      existingOrder.checkoutSessionId === sessionId
+    ) {
       console.log("✅ Order already exists for this session, returning it");
-      
+
       // Populate and format the existing order
       const populatedExisting = await Purchase.findById(existingOrder._id)
         .populate({
@@ -809,9 +1198,11 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
           select: "title slug _id name",
         })
         .lean();
-      
+
       // Format order to match expected format
-      const products = (populatedExisting?.products || existingOrder.products).map((p) => ({
+      const products = (
+        populatedExisting?.products || existingOrder.products
+      ).map((p) => ({
         _id: p._id,
         quantity: p.quantity,
         price: p.price,
@@ -832,13 +1223,14 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
         totalItems,
         products,
         totalAmount: existingOrder.totalAmount,
+        platformFee: existingOrder.platformFeeAmount || 0, // ✅ Include platform fee
         paymentStatus: existingOrder.paymentStatus,
         status: existingOrder.status,
         shippingAddress: existingOrder.shippingAddress,
         createdAt: existingOrder.createdAt,
         updatedAt: existingOrder.updatedAt,
       };
-      
+
       return res.status(200).json({
         status: "success",
         message: "Order already exists",
@@ -846,7 +1238,7 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
       });
     }
   }
-  
+
   let products = [];
   try {
     products = metadata.products ? JSON.parse(metadata.products) : [];
@@ -861,19 +1253,30 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
       ? JSON.parse(metadata.shippingAddress)
       : {};
   } catch (parseError) {
-    console.error("Failed to parse shipping address from metadata:", parseError);
+    console.error(
+      "Failed to parse shipping address from metadata:",
+      parseError,
+    );
     // Continue with empty address if parsing fails
   }
-  
+
+  // ✅ Extract platform fee from metadata
+  const platformFeeAmount = metadata.platformFeeAmount
+    ? Number(metadata.platformFeeAmount)
+    : 0;
+
   // Add taxAmount and shippingCost to shippingAddress for invoice display
   const taxAmount = metadata.taxAmount ? Number(metadata.taxAmount) : 0;
-  const shippingCost = metadata.shippingCost ? Number(metadata.shippingCost) : 0;
-  
+  const shippingCost = metadata.shippingCost
+    ? Number(metadata.shippingCost)
+    : 0;
+
   shippingAddress.taxAmount = taxAmount;
   shippingAddress.shippingCost = shippingCost;
 
   console.log("📦 Creating order with products:", products.length);
   console.log("📦 Products data:", JSON.stringify(products, null, 2));
+  console.log("💰 Platform fee amount:", platformFeeAmount); // ✅ Log platform fee
 
   if (!products.length) {
     console.error("❌ No products found in metadata");
@@ -896,12 +1299,14 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
 
     // Use price from item if available (from cart), otherwise use product price
     let itemPrice = item.price ? Number(item.price) : Number(product.price);
-    
+
     // If no price in item, calculate from product with discount
     if (!item.price) {
       itemPrice = Number(product.price);
-      if (product.discount &&
-        (!product.discountExpires || new Date(product.discountExpires) >= new Date())
+      if (
+        product.discount &&
+        (!product.discountExpires ||
+          new Date(product.discountExpires) >= new Date())
       ) {
         if (product.discountType === "fixed") itemPrice -= product.discount;
         else if (product.discountType === "percentage")
@@ -912,19 +1317,22 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
 
     // Ensure seller ID is properly set
     const sellerId = product.createdBy || product.seller;
-    console.log(`✅ Adding product: ${product.name || product.title}, Price: $${itemPrice}, Qty: ${item.quantity}`);
+    console.log(
+      `✅ Adding product: ${product.name || product.title}, Price: $${itemPrice}, Qty: ${item.quantity}`,
+    );
     console.log(`   Seller ID: ${sellerId} (Type: ${typeof sellerId})`);
 
     // Update stock
-    await Product.findByIdAndUpdate(
-      item.product,
-      { $inc: { stockQuantity: -item.quantity } }
-    );
+    await Product.findByIdAndUpdate(item.product, {
+      $inc: { stockQuantity: -item.quantity },
+    });
 
     // Purchase model expects seller as String, so convert to String
     const finalSellerId = String(sellerId);
-    console.log(`   Final Seller ID (String): ${finalSellerId} (Type: ${typeof finalSellerId})`);
-    
+    console.log(
+      `   Final Seller ID (String): ${finalSellerId} (Type: ${typeof finalSellerId})`,
+    );
+
     purchaseProducts.push({
       product: product._id,
       quantity: item.quantity,
@@ -953,12 +1361,15 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
   let order;
   try {
     console.log("📦 Creating order with buyer (string):", finalBuyerString);
+    console.log("💰 Platform fee to store:", platformFeeAmount); // ✅ Log before creation
+
     order = await Purchase.create({
       orderId,
       buyer: finalBuyerString, // Store as string (Purchase schema expects String)
       products: purchaseProducts,
       shippingAddress,
       totalAmount,
+      platformFeeAmount, // ✅ Store platform fee
       paymentStatus: "paid",
       status: "new",
       paymentIntentId: session.payment_intent,
@@ -972,23 +1383,58 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
         },
       ],
     });
-    console.log("✅ Order created successfully:", orderId, "Buyer (string):", finalBuyerString);
+    console.log(
+      "✅ Order created successfully:",
+      orderId,
+      "Buyer (string):",
+      finalBuyerString,
+    );
+    console.log("💰 Platform fee stored:", order.platformFeeAmount || 0); // ✅ Confirm storage
+
+    // Record promo code usage if applicable
+    const sessionMetadata = session.metadata || {};
+    const usedPromoCodeId = sessionMetadata.promoCodeId || metadata.promoCodeId;
+
+    if (usedPromoCodeId && finalBuyerString) {
+      try {
+        // Record the promo code usage
+        await CustomerPromoCodeUse.create({
+          user_id: finalBuyerString,
+          promoCodeId: usedPromoCodeId,
+          purchase_id: order._id,
+        });
+
+        // Update promo code usage count
+        await PromoCode.findByIdAndUpdate(usedPromoCodeId, {
+          $inc: { usedCount: 1 },
+        });
+
+        console.log(
+          `✅ Promo code usage recorded: User ${finalBuyerString} used promo ${usedPromoCodeId}`,
+        );
+      } catch (promoError) {
+        console.error("⚠️ Failed to record promo code usage:", promoError);
+        // Don't fail the order if promo code tracking fails
+      }
+    }
   } catch (createError) {
     console.error("❌ Failed to create order:", createError);
     console.error("❌ Error details:", JSON.stringify(createError, null, 2));
-    return next(new AppError(`Failed to create order: ${createError.message}`, 500));
+    return next(
+      new AppError(`Failed to create order: ${createError.message}`, 500),
+    );
   }
 
   // Clear cart (use finalBuyerString)
   try {
     const { Cart } = await import("../../models/customers/cart.js");
-    await Cart.deleteMany({ 
+    await Cart.deleteMany({
       $or: [
         { user: finalBuyerString },
         { user: buyer },
         { user: req.user._id },
         { user: req.user.id },
-      ]
+      ],
     });
     console.log("✅ Cart cleared for user:", finalBuyerString);
   } catch (cartError) {
@@ -1013,35 +1459,62 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
 
   // ✅ Send notifications to sellers about new order
   try {
-    const { Notification } = await import("../../models/common/notification.js");
+    const { Notification } =
+      await import("../../models/common/notification.js");
     const { User } = await import("../../models/users.js");
-    
+
     // Get unique seller IDs from purchaseProducts
-    const uniqueSellerIds = [...new Set(purchaseProducts.map(p => p.seller))];
-    
+    const uniqueSellerIds = [...new Set(purchaseProducts.map((p) => p.seller))];
+
     // Create notification for each seller
     const notificationPromises = uniqueSellerIds.map(async (sellerId) => {
       try {
         const seller = await User.findById(sellerId);
         if (seller) {
+          // ✅ Calculate seller's portion (after platform fee if applicable)
+          const sellerProducts = purchaseProducts.filter(
+            (p) => p.seller === sellerId,
+          );
+          const sellerSubtotal = sellerProducts.reduce(
+            (sum, p) => sum + p.price * p.quantity,
+            0,
+          );
+
+          // If this is a Stripe Connect payment, mention net amount
+          let amountMessage = `Total: $${sellerSubtotal.toFixed(2)}`;
+          if (platformFeeAmount > 0) {
+            // Calculate proportional platform fee for this seller
+            const sellerProportion = sellerSubtotal / totalAmount;
+            const sellerPlatformFee = platformFeeAmount * sellerProportion;
+            const sellerNetAmount = sellerSubtotal - sellerPlatformFee;
+            amountMessage = `Subtotal: $${sellerSubtotal.toFixed(2)} (You receive: $${sellerNetAmount.toFixed(2)} after platform fee)`;
+          }
+
           await Notification.create({
             user: String(sellerId),
             type: "order_placed",
             title: "New Order Received",
-            message: `You have received a new order (${orderId}) with ${purchaseProducts.filter(p => p.seller === sellerId).length} product(s). Total: $${purchaseProducts.filter(p => p.seller === sellerId).reduce((sum, p) => sum + (p.price * p.quantity), 0).toFixed(2)}`,
+            message: `You have received a new order (${orderId}) with ${sellerProducts.length} product(s). ${amountMessage}`,
             orderId: orderId,
             order: String(order._id),
             metadata: {
-              totalAmount: purchaseProducts.filter(p => p.seller === sellerId).reduce((sum, p) => sum + (p.price * p.quantity), 0),
-              productCount: purchaseProducts.filter(p => p.seller === sellerId).length,
+              totalAmount: sellerSubtotal,
+              platformFee:
+                platformFeeAmount > 0
+                  ? platformFeeAmount * (sellerSubtotal / totalAmount)
+                  : 0,
+              productCount: sellerProducts.length,
             },
           });
         }
       } catch (notifError) {
-        console.error(`⚠️ Failed to create notification for seller ${sellerId}:`, notifError);
+        console.error(
+          `⚠️ Failed to create notification for seller ${sellerId}:`,
+          notifError,
+        );
       }
     });
-    
+
     await Promise.all(notificationPromises);
     console.log("✅ Notifications sent to sellers");
   } catch (notifError) {
@@ -1057,17 +1530,19 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
     .lean();
 
   // Format order to match getOrderBySessionId format
-  const formattedProducts = (populatedOrder?.products || order.products).map((p) => ({
-    _id: p._id,
-    quantity: p.quantity,
-    price: p.price,
-    seller: p.seller,
-    product: {
-      _id: p.product?._id || null,
-      title: p.product?.title || p.product?.name || null,
-      slug: p.product?.slug || null,
-    },
-  }));
+  const formattedProducts = (populatedOrder?.products || order.products).map(
+    (p) => ({
+      _id: p._id,
+      quantity: p.quantity,
+      price: p.price,
+      seller: p.seller,
+      product: {
+        _id: p.product?._id || null,
+        title: p.product?.title || p.product?.name || null,
+        slug: p.product?.slug || null,
+      },
+    }),
+  );
 
   const totalItems = formattedProducts.reduce((sum, p) => sum + p.quantity, 0);
 
@@ -1078,6 +1553,8 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
     totalItems,
     products: formattedProducts,
     totalAmount: order.totalAmount,
+    platformFee: platformFeeAmount, // ✅ Include platform fee in response
+    sellerReceives: totalAmount - platformFeeAmount, // ✅ What seller gets
     paymentStatus: order.paymentStatus,
     status: order.status,
     shippingAddress: order.shippingAddress,
@@ -1086,6 +1563,8 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
   };
 
   console.log("✅ Order created and formatted:", formattedOrder.orderId);
+  console.log("💰 Platform fee:", platformFeeAmount);
+  console.log("💰 Seller receives:", totalAmount - platformFeeAmount);
 
   res.status(201).json({
     status: "success",
@@ -1133,12 +1612,12 @@ const createPurchaseFromPaymentIntent = async (paymentIntent) => {
         const product = await Product.findOneAndUpdate(
           { _id: item.product, stockQuantity: { $gte: item.quantity } },
           { $inc: { stockQuantity: -item.quantity } },
-          { new: true, session }
+          { new: true, session },
         );
 
         if (!product)
           throw new Error(
-            `Insufficient stock or write conflict for ${item.product}`
+            `Insufficient stock or write conflict for ${item.product}`,
           );
 
         // ✅ Update ProductPerformance with final paid price
@@ -1197,7 +1676,7 @@ const createPurchaseFromPaymentIntent = async (paymentIntent) => {
             ],
           },
         ],
-        { session }
+        { session },
       );
 
       // ✅ Add Loyalty Points AFTER purchase creation
@@ -1214,7 +1693,7 @@ const createPurchaseFromPaymentIntent = async (paymentIntent) => {
               referenceId: orderId,
             },
           ],
-          { session }
+          { session },
         );
       }
 
@@ -1228,10 +1707,47 @@ const createPurchaseFromPaymentIntent = async (paymentIntent) => {
         // Don't fail the order if cart clearing fails
       }
 
+      // Record promo code usage if applicable
+      const usedPromoCodeId = metadata.promoCodeId;
+      if (usedPromoCodeId && buyer) {
+        try {
+          // Record the promo code usage
+          await CustomerPromoCodeUse.create(
+            [
+              {
+                user_id: buyer,
+                promoCodeId: usedPromoCodeId,
+                purchase_id: orderId, // We'll update this with the actual purchase ID after creation
+              },
+            ],
+            { session },
+          );
+
+          // Update promo code usage count
+          await PromoCode.findByIdAndUpdate(
+            usedPromoCodeId,
+            { $inc: { usedCount: 1 } },
+            { session },
+          );
+
+          console.log(
+            `✅ Promo code usage recorded in payment intent: User ${buyer} used promo ${usedPromoCodeId}`,
+          );
+        } catch (promoError) {
+          console.error(
+            "⚠️ Failed to record promo code usage in payment intent:",
+            promoError,
+          );
+          // Don't fail the order if promo code tracking fails
+        }
+      }
+
       await session.commitTransaction();
       session.endSession();
       success = true;
-      console.log("✅ Purchase saved successfully & loyalty points added & cart cleared!");
+      console.log(
+        "✅ Purchase saved successfully & loyalty points added & cart cleared!",
+      );
     } catch (err) {
       await session.abortTransaction();
       session.endSession();
@@ -1241,3 +1757,464 @@ const createPurchaseFromPaymentIntent = async (paymentIntent) => {
     }
   }
 };
+// 🔹 Handle Full or Partial Refund
+const handleRefund = async (charge) => {
+  try {
+    const paymentIntentId = charge.payment_intent;
+
+    // Find the purchase by payment intent
+    const purchase = await Purchase.findOne({ paymentIntentId });
+
+    if (!purchase) {
+      console.error("❌ Purchase not found for charge:", charge.id);
+      return;
+    }
+
+    // Calculate refund amount
+    const refundAmount = charge.amount_refunded / 100;
+    const isFullRefund = charge.refunded; // true if fully refunded
+
+    // ✅ Get platform fee from metadata
+    const platformFeeAmount = purchase.platformFeeAmount || 0;
+    const hasPlatformFee = platformFeeAmount > 0;
+
+    // ✅ Calculate application fee refund
+    // When refunding with Stripe Connect, the application fee is automatically handled
+    // But we need to track it for our records
+    let platformFeeRefunded = 0;
+    if (hasPlatformFee) {
+      if (isFullRefund) {
+        // Full refund = full platform fee reversal
+        platformFeeRefunded = platformFeeAmount;
+      } else {
+        // Partial refund = proportional platform fee reversal
+        const refundPercentage = refundAmount / purchase.totalAmount;
+        platformFeeRefunded = platformFeeAmount * refundPercentage;
+        platformFeeRefunded = Math.round(platformFeeRefunded * 100) / 100;
+      }
+    }
+
+    // Update purchase status
+    purchase.paymentStatus = isFullRefund ? "refunded" : "partially_refunded";
+    purchase.refundAmount = refundAmount;
+    purchase.refundedAt = new Date();
+    purchase.platformFeeRefunded = platformFeeRefunded; // ✅ Track platform fee refund
+
+    // Add refund timeline event
+    purchase.orderTimeline.push({
+      event: isFullRefund ? "Full Refund Issued" : "Partial Refund Issued",
+      timestamp: new Date(),
+      location: "System",
+      notes: `Refund amount: $${refundAmount.toFixed(2)}${hasPlatformFee ? `, Platform fee reversed: $${platformFeeRefunded.toFixed(2)}` : ""}`,
+    });
+
+    // If full refund, restore stock for all products
+    if (isFullRefund) {
+      for (const item of purchase.products) {
+        await Product.findByIdAndUpdate(item.product, {
+          $inc: { stockQuantity: item.quantity },
+        });
+
+        // Update product timeline
+        item.timeline.push({
+          event: "Stock Restored (Refund)",
+          timestamp: new Date(),
+          location: "System",
+        });
+      }
+
+      purchase.status = "refunded";
+    }
+
+    await purchase.save();
+
+    console.log(
+      `✅ ${isFullRefund ? "Full" : "Partial"} refund processed for order:`,
+      purchase.orderId,
+    );
+    if (hasPlatformFee) {
+      console.log(
+        `   Platform fee reversed: $${platformFeeRefunded.toFixed(2)}`,
+      );
+    }
+
+    // TODO: Send email notification to buyer about refund
+    // await sendRefundEmail(purchase);
+  } catch (err) {
+    console.error("❌ Error handling refund:", err);
+    throw err;
+  }
+};
+
+// 🔹 Handle Dispute/Chargeback Created
+const handleDisputeCreated = async (dispute) => {
+  try {
+    const chargeId = dispute.charge;
+
+    // Find purchase by charge ID or payment intent
+    const purchase = await Purchase.findOne({
+      $or: [{ chargeId }, { paymentIntentId: dispute.payment_intent }],
+    });
+
+    if (!purchase) {
+      console.error("❌ Purchase not found for dispute:", dispute.id);
+      return;
+    }
+
+    // ✅ Get platform fee information
+    const platformFeeAmount = purchase.platformFeeAmount || 0;
+
+    // Update purchase with dispute information
+    purchase.disputeStatus = "under_review";
+    purchase.disputeId = dispute.id;
+    purchase.disputeReason = dispute.reason;
+    purchase.disputeAmount = dispute.amount / 100;
+    purchase.disputeCreatedAt = new Date(dispute.created * 1000);
+
+    // Add dispute timeline event
+    purchase.orderTimeline.push({
+      event: "Chargeback Dispute Created",
+      timestamp: new Date(),
+      location: "System",
+      notes: `Reason: ${dispute.reason}, Amount: $${(dispute.amount / 100).toFixed(2)}${platformFeeAmount > 0 ? `, Platform fee at risk: $${platformFeeAmount.toFixed(2)}` : ""}`,
+    });
+
+    // Mark payment status as disputed
+    purchase.paymentStatus = "disputed";
+
+    await purchase.save();
+
+    console.log("⚠️ Dispute created for order:", purchase.orderId);
+    if (platformFeeAmount > 0) {
+      console.log(
+        `   ⚠️ Platform fee at risk: $${platformFeeAmount.toFixed(2)}`,
+      );
+    }
+
+    // TODO: Send email notification to seller about dispute
+    // await sendDisputeNotificationToSeller(purchase);
+  } catch (err) {
+    console.error("❌ Error handling dispute creation:", err);
+    throw err;
+  }
+};
+
+// 🔹 Handle Dispute Updated
+const handleDisputeUpdated = async (dispute) => {
+  try {
+    const purchase = await Purchase.findOne({ disputeId: dispute.id });
+
+    if (!purchase) {
+      console.error("❌ Purchase not found for dispute:", dispute.id);
+      return;
+    }
+
+    // Update dispute status
+    purchase.disputeStatus = dispute.status;
+
+    // Add timeline event
+    purchase.orderTimeline.push({
+      event: "Dispute Status Updated",
+      timestamp: new Date(),
+      location: "System",
+      notes: `New status: ${dispute.status}`,
+    });
+
+    await purchase.save();
+
+    console.log("✅ Dispute updated for order:", purchase.orderId);
+  } catch (err) {
+    console.error("❌ Error handling dispute update:", err);
+    throw err;
+  }
+};
+
+// 🔹 Handle Dispute Closed
+const handleDisputeClosed = async (dispute) => {
+  try {
+    const purchase = await Purchase.findOne({ disputeId: dispute.id });
+
+    if (!purchase) {
+      console.error("❌ Purchase not found for dispute:", dispute.id);
+      return;
+    }
+
+    // ✅ Get platform fee information
+    const platformFeeAmount = purchase.platformFeeAmount || 0;
+    const hasPlatformFee = platformFeeAmount > 0;
+
+    // Update dispute status
+    purchase.disputeStatus = dispute.status; // 'won', 'lost', or 'warning_closed'
+    purchase.disputeClosedAt = new Date();
+
+    // Handle based on outcome
+    if (dispute.status === "lost") {
+      // Seller lost the dispute - treat as refund
+      purchase.paymentStatus = "refunded";
+      purchase.status = "refunded";
+      purchase.refundAmount = dispute.amount / 100;
+      purchase.refundedAt = new Date();
+
+      // ✅ Platform fee is reversed when dispute is lost
+      if (hasPlatformFee) {
+        purchase.platformFeeRefunded = platformFeeAmount;
+      }
+
+      // Restore stock
+      for (const item of purchase.products) {
+        await Product.findByIdAndUpdate(item.product, {
+          $inc: { stockQuantity: item.quantity },
+        });
+
+        item.timeline.push({
+          event: "Stock Restored (Dispute Lost)",
+          timestamp: new Date(),
+          location: "System",
+        });
+      }
+
+      purchase.orderTimeline.push({
+        event: "Dispute Lost - Refund Issued",
+        timestamp: new Date(),
+        location: "System",
+        notes: `Chargeback amount: $${(dispute.amount / 100).toFixed(2)}${hasPlatformFee ? `, Platform fee reversed: $${platformFeeAmount.toFixed(2)}` : ""}`,
+      });
+
+      console.log(
+        `❌ Dispute lost for order ${purchase.orderId}. Chargeback: $${(dispute.amount / 100).toFixed(2)}`,
+      );
+      if (hasPlatformFee) {
+        console.log(
+          `   Platform fee reversed: $${platformFeeAmount.toFixed(2)}`,
+        );
+      }
+    } else if (dispute.status === "won") {
+      // Seller won the dispute - platform fee retained
+      purchase.paymentStatus = "paid";
+
+      purchase.orderTimeline.push({
+        event: "Dispute Won",
+        timestamp: new Date(),
+        location: "System",
+        notes: `Payment retained${hasPlatformFee ? `, Platform fee retained: $${platformFeeAmount.toFixed(2)}` : ""}`,
+      });
+
+      console.log(`✅ Dispute won for order ${purchase.orderId}`);
+      if (hasPlatformFee) {
+        console.log(
+          `   Platform fee retained: $${platformFeeAmount.toFixed(2)}`,
+        );
+      }
+    } else {
+      // Warning closed or other status
+      purchase.orderTimeline.push({
+        event: "Dispute Closed",
+        timestamp: new Date(),
+        location: "System",
+        notes: `Status: ${dispute.status}`,
+      });
+    }
+
+    await purchase.save();
+
+    console.log(
+      `✅ Dispute closed (${dispute.status}) for order:`,
+      purchase.orderId,
+    );
+
+    // TODO: Send email notification about dispute resolution
+    // await sendDisputeResolutionEmail(purchase, dispute.status);
+  } catch (err) {
+    console.error("❌ Error handling dispute closure:", err);
+    throw err;
+  }
+};
+
+// 🔹 Manual Refund Controller (for admin/seller initiated refunds)
+export const createRefund = catchAsync(async (req, res, next) => {
+  const { orderId, amount, reason } = req.body;
+
+  // Find the purchase
+  const purchase = await Purchase.findOne({ orderId });
+
+  if (!purchase) {
+    return next(new AppError("Order not found", 404));
+  }
+
+  if (!purchase.paymentIntentId) {
+    return next(new AppError("No payment intent found for this order", 400));
+  }
+
+  // Check if already refunded
+  if (purchase.paymentStatus === "refunded") {
+    return next(new AppError("Order already refunded", 400));
+  }
+
+  // Calculate refund amount
+  const refundAmount = amount || purchase.totalAmount;
+  const isPartial = amount && amount < purchase.totalAmount;
+
+  // ✅ Get platform fee information
+  const platformFeeAmount = purchase.platformFeeAmount || 0;
+  const hasPlatformFee = platformFeeAmount > 0;
+
+  // ✅ Calculate platform fee refund
+  let platformFeeRefund = 0;
+  if (hasPlatformFee) {
+    if (isPartial) {
+      // Proportional platform fee reversal
+      const refundPercentage = refundAmount / purchase.totalAmount;
+      platformFeeRefund = platformFeeAmount * refundPercentage;
+      platformFeeRefund = Math.round(platformFeeRefund * 100) / 100;
+    } else {
+      // Full platform fee reversal
+      platformFeeRefund = platformFeeAmount;
+    }
+  }
+
+  // ✅ Create refund in Stripe with fee reversal
+  const refundConfig = {
+    payment_intent: purchase.paymentIntentId,
+    amount: Math.round(refundAmount * 100), // Convert to cents
+    reason: reason || "requested_by_customer",
+    metadata: {
+      orderId: purchase.orderId,
+      refundType: isPartial ? "partial" : "full",
+      platformFeeRefunded: platformFeeRefund.toString(),
+    },
+  };
+
+  // ✅ If there's a platform fee and this is a Stripe Connect payment, reverse it
+  if (hasPlatformFee && platformFeeRefund > 0) {
+    refundConfig.reverse_transfer = false; // Don't reverse transfer (seller keeps their portion)
+    refundConfig.refund_application_fee = true; // But refund the platform fee
+  }
+
+  const refund = await stripe.refunds.create(refundConfig);
+
+  // Update will be handled by webhook (charge.refunded event)
+  // But we can update immediately here as well
+  purchase.paymentStatus = isPartial ? "partially_refunded" : "refunded";
+  purchase.refundAmount = refundAmount;
+  purchase.refundedAt = new Date();
+  purchase.platformFeeRefunded =
+    (purchase.platformFeeRefunded || 0) + platformFeeRefund; // ✅ Track cumulative platform fee refund
+
+  purchase.orderTimeline.push({
+    event: isPartial ? "Partial Refund Initiated" : "Full Refund Initiated",
+    timestamp: new Date(),
+    location: "Admin/Seller",
+    notes: `Reason: ${reason || "Customer request"}, Amount: $${refundAmount.toFixed(2)}${hasPlatformFee ? `, Platform fee reversed: $${platformFeeRefund.toFixed(2)}` : ""}`,
+  });
+
+  if (!isPartial) {
+    purchase.status = "refunded";
+
+    // Restore stock
+    for (const item of purchase.products) {
+      await Product.findByIdAndUpdate(item.product, {
+        $inc: { stockQuantity: item.quantity },
+      });
+    }
+  }
+
+  await purchase.save();
+
+  res.status(200).json({
+    success: true,
+    message: `${isPartial ? "Partial" : "Full"} refund processed successfully`,
+    refund: {
+      id: refund.id,
+      amount: refundAmount,
+      platformFeeRefunded: platformFeeRefund,
+      status: refund.status,
+    },
+  });
+});
+
+// 🔹 Get Dispute Details
+export const getDisputeDetails = catchAsync(async (req, res, next) => {
+  const { orderId } = req.params;
+
+  const purchase = await Purchase.findOne({ orderId })
+    .populate("buyer", "name email")
+    .populate("products.product", "name price");
+
+  if (!purchase) {
+    return next(new AppError("Order not found", 404));
+  }
+
+  if (!purchase.disputeId) {
+    return next(new AppError("No dispute found for this order", 404));
+  }
+
+  // Fetch latest dispute info from Stripe
+  const dispute = await stripe.disputes.retrieve(purchase.disputeId);
+
+  res.status(200).json({
+    success: true,
+    dispute: {
+      id: dispute.id,
+      amount: dispute.amount / 100,
+      status: dispute.status,
+      reason: dispute.reason,
+      created: new Date(dispute.created * 1000),
+      evidence_due_by: dispute.evidence_details?.due_by
+        ? new Date(dispute.evidence_details.due_by * 1000)
+        : null,
+    },
+    order: {
+      orderId: purchase.orderId,
+      totalAmount: purchase.totalAmount,
+      disputeStatus: purchase.disputeStatus,
+      timeline: purchase.orderTimeline,
+    },
+  });
+});
+
+// 🔹 Submit Evidence for Dispute
+export const submitDisputeEvidence = catchAsync(async (req, res, next) => {
+  const { orderId } = req.params;
+  const {
+    customerName,
+    shippingTrackingNumber,
+    customerEmailAddress,
+    evidence,
+  } = req.body;
+
+  const purchase = await Purchase.findOne({ orderId });
+
+  if (!purchase || !purchase.disputeId) {
+    return next(new AppError("Dispute not found", 404));
+  }
+
+  // Submit evidence to Stripe
+  const dispute = await stripe.disputes.update(purchase.disputeId, {
+    evidence: {
+      customer_name: customerName || purchase.shippingAddress?.name,
+      shipping_tracking_number:
+        shippingTrackingNumber || purchase.trackingNumber,
+      customer_email_address: customerEmailAddress,
+      ...evidence,
+    },
+  });
+
+  // Update purchase timeline
+  purchase.orderTimeline.push({
+    event: "Dispute Evidence Submitted",
+    timestamp: new Date(),
+    location: "Seller",
+    notes: "Evidence submitted to Stripe",
+  });
+
+  await purchase.save();
+
+  res.status(200).json({
+    success: true,
+    message: "Evidence submitted successfully",
+    dispute: {
+      id: dispute.id,
+      status: dispute.status,
+    },
+  });
+});

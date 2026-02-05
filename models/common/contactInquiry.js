@@ -74,6 +74,34 @@ const contactInquirySchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    assignedAdmin: {
+      type: String,
+      ref: "Admin",
+      default: null,
+      index: true,
+    },
+    assignedAt: {
+      type: Date,
+      default: null,
+    },
+    assignmentHistory: [{
+      assignedBy: {
+        type: String,
+        ref: "Admin"
+      },
+      assignedTo: {
+        type: String,
+        ref: "Admin"
+      },
+      assignedAt: {
+        type: Date,
+        default: Date.now
+      },
+      reason: {
+        type: String,
+        default: "Automatic assignment"
+      }
+    }],
   },
   { timestamps: true }
 );
@@ -82,6 +110,8 @@ const contactInquirySchema = new mongoose.Schema(
 contactInquirySchema.index({ email: 1, createdAt: -1 });
 contactInquirySchema.index({ status: 1, createdAt: -1 });
 contactInquirySchema.index({ inquiryType: 1 });
+contactInquirySchema.index({ assignedAdmin: 1, createdAt: -1 });
+contactInquirySchema.index({ assignedAdmin: 1, status: 1 });
 
 export const ContactInquiry = mongoose.model(
   "ContactInquiry",

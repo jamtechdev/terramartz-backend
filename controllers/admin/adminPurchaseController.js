@@ -123,6 +123,56 @@ export const getAllTransactions = catchAsync(async (req, res) => {
       },
     },
     { $unwind: "$buyer" },
+
+    // 🔹 Unwind products array to lookup each product
+    { $unwind: "$products" },
+
+    // 🔹 Lookup product details (LEFT JOIN to get null if product deleted)
+    {
+      $lookup: {
+        from: "products",
+        localField: "products.product",
+        foreignField: "_id",
+        as: "productDetails",
+      },
+    },
+
+    // 🔹 Group back to reconstruct the purchase with product details
+    {
+      $group: {
+        _id: "$_id",
+        orderId: { $first: "$orderId" },
+        buyer: { $first: "$buyer" },
+        totalAmount: { $first: "$totalAmount" },
+        status: { $first: "$status" },
+        paymentStatus: { $first: "$paymentStatus" },
+        trackingNumber: { $first: "$trackingNumber" },
+        createdAt: { $first: "$createdAt" },
+        products: {
+          $push: {
+            productId: "$products.product",
+            productName: {
+              $ifNull: [
+                { $arrayElemAt: ["$productDetails.title", 0] },
+                "Deleted Product", // 🔹 Fallback for deleted products
+              ],
+            },
+            quantity: "$products.quantity",
+            price: "$products.price",
+            isDeleted: {
+              // 🔹 Flag to identify deleted products
+              $cond: {
+                if: { $eq: [{ $size: "$productDetails" }, 0] },
+                then: true,
+                else: false,
+              },
+            },
+          },
+        },
+        totalProducts: { $sum: "$products.quantity" },
+      },
+    },
+
     { $match: match },
     { $sort: { createdAt: -1 } },
     { $skip: skip },
@@ -150,6 +200,8 @@ export const getAllTransactions = catchAsync(async (req, res) => {
         paymentStatus: 1,
         trackingNumber: 1,
         date: "$createdAt",
+        products: 1,
+        totalProducts: 1,
       },
     },
   ];
@@ -188,4 +240,3 @@ export const getAllTransactions = catchAsync(async (req, res) => {
     transactions,
   });
 });
-

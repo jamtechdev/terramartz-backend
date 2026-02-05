@@ -4,16 +4,48 @@ class APIFeatures {
     this.queryString = queryString;
   }
 
-  // 1️⃣ Filtering
+// 1️⃣ Filtering
   filter() {
     const queryObj = { ...this.queryString };
-    const excludedFields = ["page", "sort", "limit"];
+    const excludedFields = ["page", "sort", "limit", "search"];
     excludedFields.forEach((el) => delete queryObj[el]);
 
     let queryStr = JSON.stringify(queryObj);
     queryStr = queryStr.replace(/\b(gte|gt|lte|lt)\b/g, (match) => `$${match}`);
 
     this.query = this.query.find(JSON.parse(queryStr));
+    return this;
+  }
+
+  // 1️⃣ Search
+  search() {
+    if (this.queryString.search) {
+      const searchTerm = this.queryString.search;
+      const searchRegex = new RegExp(searchTerm, 'i');
+      this.query = this.query.find({
+        $or: [
+          { name: searchRegex },
+          { email: searchRegex },
+          { phoneNumber: searchRegex }
+        ]
+      });
+    }
+    return this;
+  }
+
+  // 1️⃣ Search
+  search() {
+    if (this.queryString.search) {
+      const searchTerm = this.queryString.search;
+      const searchRegex = new RegExp(searchTerm, 'i');
+      this.query = this.query.find({
+        $or: [
+          { name: searchRegex },
+          { email: searchRegex },
+          { phoneNumber: searchRegex }
+        ]
+      });
+    }
     return this;
   }
 
@@ -24,6 +56,18 @@ class APIFeatures {
       this.query = this.query.sort(sortBy);
     } else {
       this.query = this.query.sort("-createdAt");
+    }
+    return this;
+  }
+
+  // 3️⃣ Field Limiting
+  limitFields() {
+    if (this.queryString.fields) {
+      const fields = this.queryString.fields.split(',').join(' ');
+      this.query = this.query.select(fields);
+    } else {
+      // Exclude __v field by default
+      this.query = this.query.select('-__v');
     }
     return this;
   }

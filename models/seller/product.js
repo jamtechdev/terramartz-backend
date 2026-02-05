@@ -57,8 +57,8 @@ const productSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["active", "inactive", "draft", "out_of_stock", "archived"],
-      default: "draft",
+      enum: ["active", "inactive", "draft", "pending", "rejected", "out_of_stock", "archived"],
+      default: "pending",
     },
     createdBy: { type: String, ref: "User", required: true, index: true },
     farmId: {
@@ -78,8 +78,17 @@ const productSchema = new mongoose.Schema(
     },
     discountExpires: { type: Date },
     delivery: { type: String, default: "today" },
+    adminApproved: {
+      type: Boolean,
+      default: false,
+    },
+    approvedBy: {
+      type: String, // User ID (buyer or seller)
+      ref: "Admin",
+      index: true,
+    },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 // 🔹 Pre-save hook for globally unique slug
 productSchema.pre("save", async function (next) {
