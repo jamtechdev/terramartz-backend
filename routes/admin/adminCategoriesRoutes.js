@@ -9,16 +9,25 @@ import { upload } from "../../middleware/admin/upload.js";
 router.get("/", adminCategoryController.getAllCategories);
 router.post(
   "/",
-  protectAdmin,
+  protectAdmin("Settings", "View"),
   upload.single("image"),
   adminCategoryController.createCategory,
 );
 router.patch(
   "/:id",
-  protectAdmin,
+  protectAdmin("Settings", "View"),
   upload.single("image"),
   adminCategoryController.updateCategory,
 );
-router.delete("/:id", protectAdmin, adminCategoryController.deleteCategory);
+router.delete(
+  "/:id",
+  protectAdmin("Settings", "View"),
+  adminCategoryController.deleteCategory,
+);
+router.patch(
+  "/:id/toggle-is-active",
+  protectAdmin("Settings", "View"),
+  adminCategoryController.toggleCategoryIsActive,
+);
 
 export default router;

@@ -34,8 +34,12 @@ const categorySchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
+    isActive: {
+      type: Boolean,
+      default: true,
+    },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 // 🔹 Compound index for seller-wise unique slug
