@@ -11,6 +11,7 @@ export const ROLE_PERMISSIONS = {
     Logistics: "Full",
     Support: "Full",
     Marketing: "Full",
+    Blogs: "Full",
     Settings: "Full",
   },
   Ops: {
@@ -24,6 +25,7 @@ export const ROLE_PERMISSIONS = {
     Logistics: "View",
     Support: "View",
     Marketing: "View",
+    Blogs: "View",
     Settings: "No",
   },
   Finance: {
@@ -37,6 +39,7 @@ export const ROLE_PERMISSIONS = {
     Logistics: "No",
     Support: "No",
     Marketing: "No",
+    Blogs: "View",
     Settings: "No",
   },
   Logistics: {
@@ -50,6 +53,7 @@ export const ROLE_PERMISSIONS = {
     Logistics: "Full",
     Support: "No",
     Marketing: "No",
+    Blogs: "View",
     Settings: "No",
   },
   Support: {
@@ -63,6 +67,7 @@ export const ROLE_PERMISSIONS = {
     Logistics: "No",
     Support: "Full",
     Marketing: "No",
+    Blogs: "View",
     Settings: "No",
   },
   "Read-Only": {
@@ -76,6 +81,7 @@ export const ROLE_PERMISSIONS = {
     Logistics: "View",
     Support: "View",
     Marketing: "View",
+    Blogs: "View",
     Settings: "No",
   },
 };

@@ -52,6 +52,12 @@ import adminPlatformFeeRoute from "./routes/super-admin/platformFeeRoute.js";
 import adminDashboardRoute from "./routes/super-admin/adminDashboardRoute.js";
 import sellerDeliveryPartnersRoute from "./routes/sellers/deliveryPartnersRoute.js";
 
+// Blog Management Routes
+import adminBlogCategoryRoutes from "./routes/admin/blogCategoryRoutes.js";
+import adminBlogRoutes from "./routes/admin/blogRoutes.js";
+import adminMediaRoutes from "./routes/admin/mediaRoutes.js";
+import blogPublicRoutes from "./routes/common/blogPublicRoutes.js";
+
 // =====================
 // __dirname setup
 // =====================
@@ -167,6 +173,12 @@ app.use("/api/seller/promo-code", sellerPromoCodeRoute);
 app.use("/api/seller/products", sellerProductRoutes);
 app.use("/api/admin/platform-fee", adminPlatformFeeRoute);
 app.use("/api/admin/dashboard", adminDashboardRoute);
+
+// Blog Routes
+app.use("/api/admin/blog-categories", adminBlogCategoryRoutes);
+app.use("/api/admin/blogs", adminBlogRoutes);
+app.use("/api/admin/media", adminMediaRoutes);
+app.use("/api/blogs", blogPublicRoutes);
 
 // =====================
 // Swagger UI
