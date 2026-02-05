@@ -32,6 +32,10 @@ router.route('/:id/status')
 router.route('/:id/approval')
   .patch(protectAdmin('Products', 'Full'), adminProductController.updateProductApproval);
 
+// EXPORT all products to CSV
+router.route('/export/csv')
+  .get(protectAdmin('Products', 'View'), adminProductController.exportAllProductsCSV);
+
 // DELETE product (soft delete by archiving)
 // router.route('/:id')
 //   .delete(protectAdmin('Products', 'Full'), adminProductController.deleteProduct);

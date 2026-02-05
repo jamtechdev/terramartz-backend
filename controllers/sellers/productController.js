@@ -970,6 +970,80 @@ export const updateProductApprovalStatus = catchAsync(
   },
 );
 
+export const exportProductsCSV = catchAsync(async (req, res, next) => {
+  // Fetch products with all related data
+  const products = await Product.find({ createdBy: req.user._id })
+    .populate("category", "name")
+    .populate("createdBy", "firstName lastName businessDetails")
+    .lean();
+
+  // Fetch performance data
+  const productIds = products.map(p => p._id);
+  const performances = await ProductPerformance.find({ product: { $in: productIds } }).lean();
+  const performanceMap = {};
+  performances.forEach(p => {
+    performanceMap[p.product.toString()] = p;
+  });
+
+  // Fetch sales data
+  const salesData = await Purchase.aggregate([
+    { $unwind: "$products" },
+    { $match: { "products.seller": req.user._id, "products.product": { $in: productIds } } },
+    { $group: { _id: "$products.product", totalSold: { $sum: "$products.quantity" }, totalRevenue: { $sum: { $multiply: ["$products.quantity", "$products.price"] } } } }
+  ]);
+  const salesMap = {};
+  salesData.forEach(s => {
+    salesMap[s._id.toString()] = { totalSold: s.totalSold, totalRevenue: s.totalRevenue };
+  });
+
+  const csvHeaders = "ID,Title,Slug,Description,Price,Original Price,Discount,Discount Type,Category,Stock Quantity,Current Stock,Product Type,Status,Organic,Featured,Tags,Product Images,Views,Total Sales,Total Revenue,Rating,Farm Name,Admin Approved,Created At,Updated At\n";
+  
+  const csvRows = products.map(p => {
+    const performance = performanceMap[p._id.toString()] || {};
+    const sales = salesMap[p._id.toString()] || { totalSold: 0, totalRevenue: 0 };
+    const productImages = (p.productImages || []).map(img => getDirectUrl(`products/${img}`)).join('; ');
+    const tags = (p.tags || []).join('; ');
+    const seller = p.createdBy ? `${p.createdBy.firstName} ${p.createdBy.lastName}`.trim() : '';
+    const shopName = p.createdBy?.businessDetails?.businessName || '';
+    
+    return [
+      p._id,
+      `"${(p.title || '').replace(/"/g, '""')}"`,
+      `"${(p.slug || '').replace(/"/g, '""')}"`,
+      `"${(p.description || '').replace(/"/g, '""')}"`,
+      p.price || 0,
+      p.originalPrice || '',
+      p.discount || 0,
+      p.discountType || '',
+      `"${p.category?.name || ''}"`,
+      p.stockQuantity || 0,
+      performance.currentStock || p.stockQuantity || 0,
+      p.productType || '',
+      p.status || '',
+      p.organic ? 'Yes' : 'No',
+      p.featured ? 'Yes' : 'No',
+      `"${tags}"`,
+      `"${productImages}"`,
+      performance.views || 0,
+      sales.totalSold,
+      sales.totalRevenue || 0,
+      performance.rating || 0,
+      `"${p.farmName || shopName}"`,
+      p.adminApproved ? 'Yes' : 'No',
+      p.createdAt ? new Date(p.createdAt).toISOString() : '',
+      p.updatedAt ? new Date(p.updatedAt).toISOString() : ''
+    ].join(',');
+  }).join("\n");
+
+  const timestamp = new Date().toISOString().split('T')[0];
+  const filename = `products-export-${timestamp}.csv`;
+
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  res.send('\uFEFF' + csvHeaders + csvRows); // BOM for Excel compatibility
+});
+
+// CSV Export
 // export const getSellerProductsWithPerformance = catchAsync(
 //   async (req, res, next) => {
 //     const sellerId = req.user._id;

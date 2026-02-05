@@ -15,6 +15,9 @@ router
   .post(upload.array("productImages", 8), productController.createProduct)
   .get(productController.getAllProducts);
 
+// CSV Export - must be before /:id route
+router.get("/export/csv", productController.exportProductsCSV);
+
 router
   .route("/:id")
   .get(productController.getProduct)

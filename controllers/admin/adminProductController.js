@@ -177,7 +177,7 @@ export const updateProductStatus = catchAsync(async (req, res, next) => {
   const { status } = req.body;
 
   // Validate status
-  const validStatuses = ['active', 'inactive', 'draft', 'out_of_stock', 'archived'];
+  const validStatuses = ['active', 'inactive', 'draft', 'pending', 'rejected', 'out_of_stock', 'archived'];
   if (!validStatuses.includes(status)) {
     return next(new AppError(`Invalid status. Valid statuses are: ${validStatuses.join(', ')}`, 400));
   }
@@ -303,4 +303,99 @@ export const deleteProduct = catchAsync(async (req, res, next) => {
     status: "success",
     message: "Product archived successfully"
   });
+});
+
+// ==========================
+// EXPORT ALL PRODUCTS TO CSV (ADMIN)
+// ==========================
+export const exportAllProductsCSV = catchAsync(async (req, res, next) => {
+  const { Product } = await import("../../models/seller/product.js");
+  const { ProductPerformance } = await import("../../models/seller/productPerformance.js");
+  const { Purchase } = await import("../../models/customers/purchase.js");
+
+  // Fetch all products with related data
+  const products = await Product.find({})
+    .populate("category", "name")
+    .populate("createdBy", "firstName lastName email phoneNumber businessDetails")
+    .populate("farmId", "name location")
+    .lean();
+
+  // Fetch performance data
+  const productIds = products.map(p => p._id);
+  const performances = await ProductPerformance.find({ product: { $in: productIds } }).lean();
+  const performanceMap = {};
+  performances.forEach(p => {
+    performanceMap[p.product.toString()] = p;
+  });
+
+  // Fetch sales analytics
+  const salesData = await Purchase.aggregate([
+    { $unwind: "$products" },
+    { $match: { "products.product": { $in: productIds } } },
+    { $group: { 
+      _id: "$products.product", 
+      totalSold: { $sum: "$products.quantity" }, 
+      totalRevenue: { $sum: { $multiply: ["$products.quantity", "$products.price"] } },
+      orderCount: { $sum: 1 }
+    }}
+  ]);
+  const salesMap = {};
+  salesData.forEach(s => {
+    salesMap[s._id.toString()] = { totalSold: s.totalSold, totalRevenue: s.totalRevenue, orderCount: s.orderCount };
+  });
+
+  const csvHeaders = "ID,Title,Slug,Description,Price,Original Price,Discount,Category,Seller Name,Seller Email,Seller Phone,Shop Name,Farm Name,Farm Location,Stock Quantity,Current Stock,Product Type,Status,Organic,Featured,Tags,Product Images,Views,Total Sales,Order Count,Total Revenue,Rating,Admin Approved,Approved By,Created At,Updated At\n";
+  
+  const csvRows = products.map(p => {
+    const performance = performanceMap[p._id.toString()] || {};
+    const sales = salesMap[p._id.toString()] || { totalSold: 0, totalRevenue: 0, orderCount: 0 };
+    const tags = (p.tags || []).join('; ');
+    const productImages = (p.productImages || []).map(img => getDirectUrl(`products/${img}`)).join('; ');
+    const seller = p.createdBy;
+    const sellerName = seller ? `${seller.firstName || ''} ${seller.lastName || ''}`.trim() : '';
+    const shopName = seller?.businessDetails?.businessName || '';
+    const farmName = p.farmId?.name || p.farmName || '';
+    const farmLocation = p.farmId?.location || '';
+    
+    return [
+      p._id,
+      `"${(p.title || '').replace(/"/g, '""')}"`,
+      `"${(p.slug || '').replace(/"/g, '""')}"`,
+      `"${(p.description || '').replace(/"/g, '""')}"`,
+      p.price || 0,
+      p.originalPrice || '',
+      p.discount || 0,
+      `"${p.category?.name || ''}"`,
+      `"${sellerName}"`,
+      seller?.email || '',
+      seller?.phoneNumber || '',
+      `"${shopName}"`,
+      `"${farmName}"`,
+      `"${farmLocation}"`,
+      p.stockQuantity || 0,
+      performance.currentStock || p.stockQuantity || 0,
+      p.productType || '',
+      p.status || '',
+      p.organic ? 'Yes' : 'No',
+      p.featured ? 'Yes' : 'No',
+      `"${tags}"`,
+      `"${productImages}"`,
+      performance.views || 0,
+      sales.totalSold,
+      sales.orderCount,
+      sales.totalRevenue || 0,
+      performance.rating || 0,
+      p.adminApproved ? 'Yes' : 'No',
+      p.approvedBy || '',
+      p.createdAt ? new Date(p.createdAt).toISOString() : '',
+      p.updatedAt ? new Date(p.updatedAt).toISOString() : ''
+    ].join(',');
+  }).join("\n");
+
+  const timestamp = new Date().toISOString().split('T')[0];
+  const filename = `admin-products-export-${timestamp}.csv`;
+
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  res.send('\uFEFF' + csvHeaders + csvRows);
 });
