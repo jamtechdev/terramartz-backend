@@ -13,6 +13,8 @@ import catchAsync from "../../utils/catchasync.js";
 import AppError from "../../utils/apperror.js";
 import { LoyaltyPoint } from "./../../models/customers/loyaltyPoints.js";
 import { PlatformFee } from "../../models/super-admin/platformFee.js";
+import { SellerSettlement } from "../../models/seller/sellerSettlement.js";
+import { calculateSettlementDate } from "../../utils/settlementHelper.js";
 
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
@@ -242,22 +244,21 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
     },
   };
 
-  // ✅ If seller has connected Stripe account, use Direct Charge with application fee
+  // ✅ Settlement logic changed: We now hold the commission and settle every Wednesday.
+  // Immediate transfer to seller is disabled.
+  /*
   if (hasStripeConnect) {
     paymentIntentConfig.transfer_data = {
       destination: seller.sellerProfile.stripeAccountId,
     };
 
-    // ✅ Apply platform fee (amount is in cents)
     if (platformFeeAmount > 0) {
       paymentIntentConfig.application_fee_amount = Math.round(
         platformFeeAmount * 100,
       );
-      console.log(
-        `✅ Application fee set: ${paymentIntentConfig.application_fee_amount} cents`,
-      );
     }
   }
+  */
 
   const paymentIntent = await stripe.paymentIntents.create(paymentIntentConfig);
 
@@ -447,7 +448,7 @@ export const webhookPayment = async (req, res, next) => {
         typeof buyerString,
       );
 
-      await Purchase.create({
+      const purchase = await Purchase.create({
         orderId,
         buyer: buyerString, // Convert to string
         products: purchaseProducts,
@@ -467,6 +468,28 @@ export const webhookPayment = async (req, res, next) => {
           },
         ],
       });
+
+      // ✅ Create SellerSettlement record
+      const commissionAmount = totalAmount - platformFeeAmount;
+      const scheduledSettlementDate = calculateSettlementDate(new Date());
+
+      // Get seller from first product
+      const sellerId = purchaseProducts[0]?.seller;
+
+      if (sellerId) {
+        await SellerSettlement.create({
+          sellerId,
+          purchaseId: purchase._id,
+          totalOrderAmount: totalAmount,
+          commissionAmount: commissionAmount,
+          platformFee: platformFeeAmount,
+          status: "pending",
+          scheduledSettlementDate,
+        });
+        console.log(
+          `✅ SellerSettlement created for seller ${sellerId}, scheduled for ${scheduledSettlementDate}`,
+        );
+      }
 
       // ✅ Clear cart after successful order
       try {
@@ -1071,6 +1094,9 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
   };
 
   // ✅ Add Stripe Connect configuration if seller has connected account
+  // ✅ Settlement logic changed: We now hold the commission and settle every Wednesday.
+  // Immediate transfer to seller is disabled.
+  /*
   if (hasStripeConnect && platformFeeAmount > 0) {
     sessionConfig.payment_intent_data = {
       application_fee_amount: Math.round(platformFeeAmount * 100), // ✅ Platform fee in cents
@@ -1085,6 +1111,7 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
       `   Application Fee: ${Math.round(platformFeeAmount * 100)} cents`,
     );
   }
+  */
 
   if (stripeCustomerId) {
     sessionConfig.customer = stripeCustomerId;
@@ -1654,8 +1681,7 @@ const createPurchaseFromPaymentIntent = async (paymentIntent) => {
       const randomHex = crypto.randomBytes(4).toString("hex").toUpperCase();
       const trackingNumber = `TRK-${Date.now()}-${randomHex}`;
 
-      // ✅ Create Purchase with overall orderTimeline
-      await Purchase.create(
+      const purchase = await Purchase.create(
         [
           {
             orderId,
@@ -1667,6 +1693,7 @@ const createPurchaseFromPaymentIntent = async (paymentIntent) => {
             status: "new",
             paymentIntentId: paymentIntent.id,
             trackingNumber,
+            platformFeeAmount: Number(metadata.platformFeeAmount) || 0,
             orderTimeline: [
               {
                 event: "Order Confirmed",
@@ -1678,6 +1705,34 @@ const createPurchaseFromPaymentIntent = async (paymentIntent) => {
         ],
         { session },
       );
+
+      // ✅ Create SellerSettlement record
+      const platformFeeAmount = Number(metadata.platformFeeAmount) || 0;
+      const commissionAmount = totalAmount - platformFeeAmount;
+      const scheduledSettlementDate = calculateSettlementDate(new Date());
+
+      // Get seller from first product (assuming single seller per order as per existing logic)
+      const sellerId = purchaseProducts[0]?.seller;
+
+      if (sellerId) {
+        await SellerSettlement.create(
+          [
+            {
+              sellerId,
+              purchaseId: purchase[0]._id,
+              totalOrderAmount: totalAmount,
+              commissionAmount: commissionAmount,
+              platformFee: platformFeeAmount,
+              status: "pending",
+              scheduledSettlementDate,
+            },
+          ],
+          { session },
+        );
+        console.log(
+          `✅ SellerSettlement created for seller ${sellerId}, scheduled for ${scheduledSettlementDate}`,
+        );
+      }
 
       // ✅ Add Loyalty Points AFTER purchase creation
       // Example: 1 point per $1 spent (customize as needed)
@@ -1827,6 +1882,29 @@ const handleRefund = async (charge) => {
     }
 
     await purchase.save();
+
+    // ✅ Update SellerSettlement for refunds
+    const settlement = await SellerSettlement.findOne({
+      purchaseId: purchase._id,
+    });
+    if (settlement && settlement.status === "pending") {
+      // Calculate how much to deduct from seller's commission
+      const refundPercentage = refundAmount / purchase.totalAmount;
+      const commissionDeduction =
+        settlement.commissionAmount * refundPercentage;
+
+      settlement.commissionAmount -= commissionDeduction;
+      settlement.refundDeductions += refundAmount;
+
+      if (isFullRefund) {
+        settlement.status = "refunded";
+      }
+
+      await settlement.save();
+      console.log(
+        `✅ SellerSettlement updated for refund: Deducted $${commissionDeduction.toFixed(2)} from commission`,
+      );
+    }
 
     console.log(
       `✅ ${isFullRefund ? "Full" : "Partial"} refund processed for order:`,
@@ -2016,6 +2094,32 @@ const handleDisputeClosed = async (dispute) => {
     }
 
     await purchase.save();
+
+    // ✅ Update SellerSettlement for settlement/chargeback
+    const settlement = await SellerSettlement.findOne({
+      purchaseId: purchase._id,
+    });
+    if (settlement && settlement.status === "pending") {
+      if (dispute.status === "lost") {
+        // If dispute is lost, the entire commission is likely gone (or proportional)
+        const lostAmount = dispute.amount / 100;
+        const refundPercentage = Math.min(1, lostAmount / purchase.totalAmount);
+        const commissionDeduction =
+          settlement.commissionAmount * refundPercentage;
+
+        settlement.commissionAmount -= commissionDeduction;
+        settlement.refundDeductions += lostAmount;
+
+        if (refundPercentage >= 1) {
+          settlement.status = "refunded";
+        }
+
+        await settlement.save();
+        console.log(
+          `✅ SellerSettlement updated for lost dispute: Deducted $${commissionDeduction.toFixed(2)} from commission`,
+        );
+      }
+    }
 
     console.log(
       `✅ Dispute closed (${dispute.status}) for order:`,

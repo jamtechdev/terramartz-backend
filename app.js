@@ -56,6 +56,7 @@ import sellerDeliveryPartnersRoute from "./routes/sellers/deliveryPartnersRoute.
 import adminBlogCategoryRoutes from "./routes/admin/blogCategoryRoutes.js";
 import adminBlogRoutes from "./routes/admin/blogRoutes.js";
 import adminMediaRoutes from "./routes/admin/mediaRoutes.js";
+import adminSettlementRoutes from "./routes/admin/adminSettlementRoutes.js";
 import blogPublicRoutes from "./routes/common/blogPublicRoutes.js";
 
 // =====================
@@ -179,6 +180,7 @@ app.use("/api/admin/dashboard", adminDashboardRoute);
 app.use("/api/admin/blog-categories", adminBlogCategoryRoutes);
 app.use("/api/admin/blogs", adminBlogRoutes);
 app.use("/api/admin/media", adminMediaRoutes);
+app.use("/api/admin/settlements", adminSettlementRoutes);
 app.use("/api/blogs", blogPublicRoutes);
 
 // =====================
