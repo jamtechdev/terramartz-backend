@@ -35,26 +35,43 @@ export const createBlog = catchAsync(async (req, res, next) => {
 // });
 
 export const getAllBlogsAdmin = catchAsync(async (req, res, next) => {
-  // Pagination values
-  const page = parseInt(req.query.page, 10) || 1;
-  const limit = parseInt(req.query.limit, 10) || 10;
+  const { search, status, category, createdBy, page = 1, limit = 10 } = req.query;
+  const pageNum = Number(page);
+  const limitNum = Number(limit);
+  const skip = (pageNum - 1) * limitNum;
 
-  // Total documents (without pagination)
-  const total = await Blog.countDocuments();
+  const match = {};
+  if (status) match.status = status;
+  if (category) match.category = category;
+  if (createdBy) match.createdBy = createdBy;
 
-  // Apply features
-  const features = new APIFeatures(Blog.find(), req.query)
-    .filter()
-    .sort()
-    .limitFields()
-    .paginate();
+  if (search) {
+    const words = String(search).trim().split(/\s+/);
+    match.$and = words.map((word) => {
+      const regex = new RegExp(word, "i");
+      return {
+        $or: [
+          { title: regex },
+          { shortDescription: regex },
+          { content: regex },
+          { tags: { $in: [regex] } },
+        ],
+      };
+    });
+  }
 
-  const blogs = await features.query.populate("category", "name slug");
+  const total = await Blog.countDocuments(match);
+
+  const blogs = await Blog.find(match)
+    .populate("category", "name slug")
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(limitNum);
 
   res.status(200).json({
     status: "success",
-    page,
-    limit,
+    page: pageNum,
+    limit: limitNum,
     total,
     results: blogs.length,
     data: {
@@ -62,6 +79,7 @@ export const getAllBlogsAdmin = catchAsync(async (req, res, next) => {
     },
   });
 });
+
 
 
 export const getBlogAdmin = catchAsync(async (req, res, next) => {
