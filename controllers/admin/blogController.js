@@ -16,7 +16,33 @@ export const createBlog = catchAsync(async (req, res, next) => {
   });
 });
 
+// export const getAllBlogsAdmin = catchAsync(async (req, res, next) => {
+//   const features = new APIFeatures(Blog.find(), req.query)
+//     .filter()
+//     .sort()
+//     .limitFields()
+//     .paginate();
+
+//   const blogs = await features.query.populate("category", "name slug");
+
+//   res.status(200).json({
+//     status: "success",
+//     results: blogs.length,
+//     data: {
+//       blogs,
+//     },
+//   });
+// });
+
 export const getAllBlogsAdmin = catchAsync(async (req, res, next) => {
+  // Pagination values
+  const page = parseInt(req.query.page, 10) || 1;
+  const limit = parseInt(req.query.limit, 10) || 10;
+
+  // Total documents (without pagination)
+  const total = await Blog.countDocuments();
+
+  // Apply features
   const features = new APIFeatures(Blog.find(), req.query)
     .filter()
     .sort()
@@ -27,12 +53,16 @@ export const getAllBlogsAdmin = catchAsync(async (req, res, next) => {
 
   res.status(200).json({
     status: "success",
+    page,
+    limit,
+    total,
     results: blogs.length,
     data: {
       blogs,
     },
   });
 });
+
 
 export const getBlogAdmin = catchAsync(async (req, res, next) => {
   const blog = await Blog.findById(req.params.id).populate("category", "name slug");
