@@ -16,24 +16,6 @@ export const createBlog = catchAsync(async (req, res, next) => {
   });
 });
 
-// export const getAllBlogsAdmin = catchAsync(async (req, res, next) => {
-//   const features = new APIFeatures(Blog.find(), req.query)
-//     .filter()
-//     .sort()
-//     .limitFields()
-//     .paginate();
-
-//   const blogs = await features.query.populate("category", "name slug");
-
-//   res.status(200).json({
-//     status: "success",
-//     results: blogs.length,
-//     data: {
-//       blogs,
-//     },
-//   });
-// });
-
 export const getAllBlogsAdmin = catchAsync(async (req, res, next) => {
   const { search, status, category, createdBy, page = 1, limit = 10 } = req.query;
   const pageNum = Number(page);
