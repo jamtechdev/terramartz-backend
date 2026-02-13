@@ -78,7 +78,10 @@ export const getCartItem = catchAsync(async (req, res, next) => {
   const cartItem = await Cart.findOne({
     _id: req.params.id,
     user: req.user._id,
-  }).populate("product");
+  }).populate({
+    path: "product",
+    populate: { path: "category" }
+  });
 
   if (!cartItem) return next(new AppError("Cart item not found", 404));
 
@@ -87,7 +90,7 @@ export const getCartItem = catchAsync(async (req, res, next) => {
     const presignedImages = await Promise.all(
       cartItem.product.productImages.map(async (imgKey) => {
         const url = await getPresignedUrl(`products/${imgKey}`);
-        return url || imgKey; // যদি presigned URL fail করে, fallback
+        return url || imgKey;
       })
     );
     cartItem.product.productImages = presignedImages;
@@ -99,7 +102,10 @@ export const getCartItem = catchAsync(async (req, res, next) => {
 // 5️⃣ Get All Cart Items for current user
 
 export const getAllCartItems = catchAsync(async (req, res, next) => {
-  const cartItems = await Cart.find({ user: req.user._id }).populate("product");
+  const cartItems = await Cart.find({ user: req.user._id }).populate({
+    path: "product",
+    populate: { path: "category" }
+  });
 
   // 🔹 Presigned URLs apply for each product image
   await Promise.all(
@@ -108,7 +114,7 @@ export const getAllCartItems = catchAsync(async (req, res, next) => {
         const presignedImages = await Promise.all(
           item.product.productImages.map(async (imgKey) => {
             const url = await getPresignedUrl(`products/${imgKey}`);
-            return url || imgKey; // fallback
+            return url || imgKey;
           })
         );
         item.product.productImages = presignedImages;

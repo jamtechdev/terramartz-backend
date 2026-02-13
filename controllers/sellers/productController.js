@@ -27,21 +27,27 @@ export const createProduct = catchAsync(async (req, res, next) => {
 
   try {
     req.body.createdBy = req.user._id;
-    
+
     // Force adminApproved to false and status to pending on creation
     req.body.adminApproved = false;
     req.body.approvedBy = undefined;
-    req.body.status = 'pending';
+    req.body.status = "pending";
 
     // Debug: Log files received and category
-    console.log('📸 Files received:', {
+    console.log("📸 Files received:", {
       filesCount: req.files?.length || 0,
-      files: req.files?.map(f => ({ fieldname: f.fieldname, originalname: f.originalname, mimetype: f.mimetype, size: f.size })) || [],
+      files:
+        req.files?.map((f) => ({
+          fieldname: f.fieldname,
+          originalname: f.originalname,
+          mimetype: f.mimetype,
+          size: f.size,
+        })) || [],
       bodyKeys: Object.keys(req.body),
     });
-    
+
     // Debug: Log category value
-    console.log('📂 Category received:', {
+    console.log("📂 Category received:", {
       category: req.body.category,
       categoryType: typeof req.body.category,
       hasCategory: !!req.body.category,
@@ -55,7 +61,9 @@ export const createProduct = catchAsync(async (req, res, next) => {
           try {
             // ✅ Database-এ শুধু filename store
             const key = `${req.user._id}-${Date.now()}-${i}.jpeg`;
-            console.log(`📤 Uploading image ${i + 1}/${req.files.length}: ${key}`);
+            console.log(
+              `📤 Uploading image ${i + 1}/${req.files.length}: ${key}`,
+            );
             await uploadToS3(file.buffer, `products/${key}`, "image/jpeg");
             req.body.productImages.push(key); // ✅ DB-এ শুধু key
             console.log(`✅ Image uploaded successfully: ${key}`);
@@ -63,76 +71,91 @@ export const createProduct = catchAsync(async (req, res, next) => {
             console.error(`❌ Error uploading image ${i + 1}:`, error);
             throw error;
           }
-        })
+        }),
       );
-      console.log(`✅ Total ${req.body.productImages.length} images uploaded and saved to productImages array`);
+      console.log(
+        `✅ Total ${req.body.productImages.length} images uploaded and saved to productImages array`,
+      );
     } else {
-      console.warn('⚠️ No files received in req.files. Files might not be uploaded properly.');
+      console.warn(
+        "⚠️ No files received in req.files. Files might not be uploaded properly.",
+      );
     }
 
     // 🔹 Validate category exists
     if (!req.body.category) {
       throw new AppError("Category is required", 400);
     }
-    
+
     // 🔹 Verify category exists in database
     // Category model uses String _id, but database might have ObjectId format from old data
     // Try to find category using the ID as-is (MongoDB will handle the conversion)
     const categoryId = String(req.body.category).trim();
-    
+
     // Try multiple lookup strategies
-    let categoryExists = await Category.findOne({ _id: categoryId }).session(session);
-    
+    let categoryExists = await Category.findOne({ _id: categoryId }).session(
+      session,
+    );
+
     // If not found, try without session
     if (!categoryExists) {
       categoryExists = await Category.findOne({ _id: categoryId });
     }
-    
+
     // If still not found and it's a valid ObjectId, try with ObjectId conversion
     // (Some old categories might be stored as ObjectId in MongoDB even though schema says String)
     if (!categoryExists && mongoose.Types.ObjectId.isValid(categoryId)) {
       try {
         // Try with ObjectId - MongoDB might have stored it as ObjectId
         const objectId = new mongoose.Types.ObjectId(categoryId);
-        categoryExists = await Category.findById(objectId).session(session) || 
-                        await Category.findById(objectId);
+        categoryExists =
+          (await Category.findById(objectId).session(session)) ||
+          (await Category.findById(objectId));
       } catch (err) {
         // Ignore ObjectId conversion errors
       }
     }
-    
+
     if (!categoryExists) {
       // Get all categories for debugging
-      const allCategories = await Category.find({}).select('_id name').limit(50).lean();
-      
-      console.error('❌ Category lookup failed:', {
+      const allCategories = await Category.find({})
+        .select("_id name")
+        .limit(50)
+        .lean();
+
+      console.error("❌ Category lookup failed:", {
         requestedId: categoryId,
         requestedIdLength: categoryId.length,
-        requestedIdFormat: categoryId.includes('-') ? 'UUID-like' : 'ObjectId-like',
+        requestedIdFormat: categoryId.includes("-")
+          ? "UUID-like"
+          : "ObjectId-like",
         totalCategoriesInDB: allCategories.length,
-        sampleCategoryIds: allCategories.slice(0, 5).map(c => ({
+        sampleCategoryIds: allCategories.slice(0, 5).map((c) => ({
           id: String(c._id),
           name: c.name,
-          length: String(c._id).length
-        }))
+          length: String(c._id).length,
+        })),
       });
-      
-      throw new AppError(`Category with ID ${categoryId} does not exist. Please select a valid category.`, 400);
+
+      throw new AppError(
+        `Category with ID ${categoryId} does not exist. Please select a valid category.`,
+        400,
+      );
     }
-    
-    console.log('✅ Category verified:', {
+
+    console.log("✅ Category verified:", {
       categoryId: categoryExists._id,
       categoryName: categoryExists.name,
       categoryIdType: typeof categoryExists._id,
       categoryIdString: String(categoryExists._id),
     });
-    
+
     // 🔹 Product create (slug auto-generate model pre-save hook এ)
     const productDocs = await Product.create([req.body], { session });
     const product = productDocs[0];
-    
+
     // Debug: Log created product category
-    console.log('✅ Product created:', {
+    console.log("✅ Product created:", {
       productId: product._id,
       category: product.category,
       categoryType: typeof product.category,
@@ -142,18 +165,19 @@ export const createProduct = catchAsync(async (req, res, next) => {
     // 🔹 ProductPerformance create
     await ProductPerformance.create(
       [{ product: product._id, currentStock: req.body.stockQuantity }],
-      { session }
+      { session },
     );
 
     // 🔹 Seller Farm - Add farmId and farmName to product
     const farm = await Farm.findOne({ owner: req.user._id }).session(session);
     if (!farm) throw new AppError("Seller's farm not found!", 404);
-    
+
     // Add farmId and farmName to product
     product.farmId = farm._id;
-    product.farmName = req.user.businessDetails?.businessName || farm.description || "Farm";
+    product.farmName =
+      req.user.businessDetails?.businessName || farm.description || "Farm";
     await product.save({ session });
-    
+
     // Also add product to farm's products array (existing relationship)
     if (!farm.products.includes(product._id)) {
       farm.products.push(product._id);
@@ -171,7 +195,7 @@ export const createProduct = catchAsync(async (req, res, next) => {
 
     // 🔹 Generate direct S3 URLs for product images
     const productImagesWithUrls = (product.productImages || []).map((img) =>
-      getDirectUrl(`products/${img}`)
+      getDirectUrl(`products/${img}`),
     );
 
     // 🔹 Response
@@ -275,8 +299,8 @@ export const updateProduct = catchAsync(async (req, res, next) => {
       if (req.oldImages && Array.isArray(req.oldImages)) {
         await Promise.all(
           req.oldImages.map(
-            async (imgKey) => await deleteFileFromS3(`products/${imgKey}`)
-          )
+            async (imgKey) => await deleteFileFromS3(`products/${imgKey}`),
+          ),
         );
       }
 
@@ -286,7 +310,7 @@ export const updateProduct = catchAsync(async (req, res, next) => {
           const key = `${req.user._id}-${Date.now()}-${i}.jpeg`;
           await uploadToS3(file.buffer, `products/${key}`, "image/jpeg");
           req.body.productImages.push(key);
-        })
+        }),
       );
     }
 
@@ -307,7 +331,7 @@ export const updateProduct = catchAsync(async (req, res, next) => {
     await ProductPerformance.findOneAndUpdate(
       { product: product._id },
       perfUpdate,
-      { session }
+      { session },
     );
 
     await session.commitTransaction();
@@ -317,7 +341,7 @@ export const updateProduct = catchAsync(async (req, res, next) => {
     let productImagesWithUrls = [];
     if (product.productImages && product.productImages.length > 0) {
       productImagesWithUrls = product.productImages.map((imgKey) =>
-        getDirectUrl(`products/${imgKey}`)
+        getDirectUrl(`products/${imgKey}`),
       );
     }
 
@@ -350,13 +374,13 @@ export const deleteProduct = catchAsync(async (req, res, next) => {
       await Promise.all(
         product.productImages.map(async (imgKey) => {
           await deleteFileFromS3(`products/${imgKey}`);
-        })
+        }),
       );
     }
 
     await ProductPerformance.findOneAndDelete(
       { product: product._id },
-      { session }
+      { session },
     );
     await Product.findByIdAndDelete(product._id, { session });
 
@@ -364,7 +388,7 @@ export const deleteProduct = catchAsync(async (req, res, next) => {
     const farm = await Farm.findOne({ owner: req.user._id }).session(session);
     if (farm) {
       farm.products = farm.products.filter(
-        (id) => id.toString() !== product._id.toString()
+        (id) => id.toString() !== product._id.toString(),
       );
       await farm.save({ session });
     }
@@ -447,7 +471,7 @@ export const incrementSalesAndUpdateStock = catchAsync(
       let productImagesWithUrl = [];
       if (product.productImages && product.productImages.length > 0) {
         productImagesWithUrl = product.productImages.map((imgKey) =>
-          getDirectUrl(`products/${imgKey}`)
+          getDirectUrl(`products/${imgKey}`),
         );
       }
 
@@ -469,7 +493,7 @@ export const incrementSalesAndUpdateStock = catchAsync(
       session.endSession();
       return next(new AppError(err.message, 500));
     }
-  }
+  },
 );
 // export const incrementSalesAndUpdateStock = catchAsync(
 //   async (req, res, next) => {
@@ -628,10 +652,16 @@ export const getAllProductWithPerformance = catchAsync(
   async (req, res, next) => {
     // 🔹 Build base query object first (plain JavaScript object)
     let baseQuery = {}; // Base query object
-    
-    if (req.user && req.user.role === "seller" && req.query.sellerOnly === "true") {
+
+    if (
+      req.user &&
+      req.user.role === "seller" &&
+      req.query.sellerOnly === "true"
+    ) {
       baseQuery.createdBy = req.user._id;
       console.log("🔍 Filtering products for seller:", req.user._id);
+    } else {
+      baseQuery.adminApproved = true;
     }
 
     // 🔍 search support - use regex for exact/partial title match (more precise than text search)
@@ -639,18 +669,22 @@ export const getAllProductWithPerformance = catchAsync(
       const searchTerm = req.query.search.trim();
       // Use regex for case-insensitive partial match on title (more precise)
       // This ensures "eggplant" only matches products with "eggplant" in the title
-      baseQuery.title = { $regex: searchTerm, $options: 'i' };
+      baseQuery.title = { $regex: searchTerm, $options: "i" };
     }
 
     // 🔹 Category filter support
-    if (req.query.categoryId && req.query.categoryId !== 'null' && req.query.categoryId !== 'undefined') {
+    if (
+      req.query.categoryId &&
+      req.query.categoryId !== "null" &&
+      req.query.categoryId !== "undefined"
+    ) {
       baseQuery.category = req.query.categoryId;
       console.log("🔍 Filtering by categoryId:", req.query.categoryId);
     }
 
     // 🔹 Get total count BEFORE creating the query chain
     const total = await Product.countDocuments(baseQuery);
-    
+
     // 🔹 Now create a fresh query for fetching products
     let query = Product.find(baseQuery);
 
@@ -660,7 +694,8 @@ export const getAllProductWithPerformance = catchAsync(
     let products = await features.query
       .populate({
         path: "category",
-        select: "_id name description image logo createdBy createdAt updatedAt slug",
+        select:
+          "_id name description image logo createdBy createdAt updatedAt slug",
       })
       .populate({
         path: "createdBy",
@@ -684,7 +719,7 @@ export const getAllProductWithPerformance = catchAsync(
     const productsWithPerformance = products.map((p) => {
       // 🔹 Direct S3 URLs for product images
       let productImages = (p.productImages || []).map((img) =>
-        getDirectUrl(`products/${img}`)
+        getDirectUrl(`products/${img}`),
       );
 
       let seller = null;
@@ -693,7 +728,7 @@ export const getAllProductWithPerformance = catchAsync(
         let profilePictureUrl = null;
         if (p.createdBy.profilePicture) {
           profilePictureUrl = getDirectUrl(
-            `profilePicture/${p.createdBy.profilePicture}`
+            `profilePicture/${p.createdBy.profilePicture}`,
           );
         }
 
@@ -701,7 +736,7 @@ export const getAllProductWithPerformance = catchAsync(
         let shopPictureUrl = null;
         if (p.createdBy.sellerProfile?.shopPicture) {
           shopPictureUrl = getDirectUrl(
-            `shopPicture/${p.createdBy.sellerProfile.shopPicture}`
+            `shopPicture/${p.createdBy.sellerProfile.shopPicture}`,
           );
         }
 
@@ -776,7 +811,7 @@ export const getAllProductWithPerformance = catchAsync(
       limit: req.query.limit * 1 || 100,
       products: productsWithPerformance,
     });
-  }
+  },
 );
 
 // https://terramartz-backend-v2.onrender.com/api/products?page=1&limit=5&topSelling=true
@@ -903,7 +938,7 @@ export const getSellerProductsWithPerformance = catchAsync(
         let productImagesWithUrl = [];
         if (p.productImages && p.productImages.length > 0) {
           productImagesWithUrl = p.productImages.map((imgKey) =>
-            getDirectUrl(`products/${imgKey}`)
+            getDirectUrl(`products/${imgKey}`),
           );
         }
 
@@ -934,7 +969,7 @@ export const getSellerProductsWithPerformance = catchAsync(
           totalSold,
           seller,
         };
-      })
+      }),
     );
 
     res.status(200).json({
@@ -945,9 +980,8 @@ export const getSellerProductsWithPerformance = catchAsync(
       limit,
       products: productsWithPerformance,
     });
-  }
+  },
 );
-
 
 export const updateProductApprovalStatus = catchAsync(
   async (req, res, next) => {
@@ -978,69 +1012,97 @@ export const exportProductsCSV = catchAsync(async (req, res, next) => {
     .lean();
 
   // Fetch performance data
-  const productIds = products.map(p => p._id);
-  const performances = await ProductPerformance.find({ product: { $in: productIds } }).lean();
+  const productIds = products.map((p) => p._id);
+  const performances = await ProductPerformance.find({
+    product: { $in: productIds },
+  }).lean();
   const performanceMap = {};
-  performances.forEach(p => {
+  performances.forEach((p) => {
     performanceMap[p.product.toString()] = p;
   });
 
   // Fetch sales data
   const salesData = await Purchase.aggregate([
     { $unwind: "$products" },
-    { $match: { "products.seller": req.user._id, "products.product": { $in: productIds } } },
-    { $group: { _id: "$products.product", totalSold: { $sum: "$products.quantity" }, totalRevenue: { $sum: { $multiply: ["$products.quantity", "$products.price"] } } } }
+    {
+      $match: {
+        "products.seller": req.user._id,
+        "products.product": { $in: productIds },
+      },
+    },
+    {
+      $group: {
+        _id: "$products.product",
+        totalSold: { $sum: "$products.quantity" },
+        totalRevenue: {
+          $sum: { $multiply: ["$products.quantity", "$products.price"] },
+        },
+      },
+    },
   ]);
   const salesMap = {};
-  salesData.forEach(s => {
-    salesMap[s._id.toString()] = { totalSold: s.totalSold, totalRevenue: s.totalRevenue };
+  salesData.forEach((s) => {
+    salesMap[s._id.toString()] = {
+      totalSold: s.totalSold,
+      totalRevenue: s.totalRevenue,
+    };
   });
 
-  const csvHeaders = "ID,Title,Slug,Description,Price,Original Price,Discount,Discount Type,Category,Stock Quantity,Current Stock,Product Type,Status,Organic,Featured,Tags,Product Images,Views,Total Sales,Total Revenue,Rating,Farm Name,Admin Approved,Created At,Updated At\n";
-  
-  const csvRows = products.map(p => {
-    const performance = performanceMap[p._id.toString()] || {};
-    const sales = salesMap[p._id.toString()] || { totalSold: 0, totalRevenue: 0 };
-    const productImages = (p.productImages || []).map(img => getDirectUrl(`products/${img}`)).join('; ');
-    const tags = (p.tags || []).join('; ');
-    const seller = p.createdBy ? `${p.createdBy.firstName} ${p.createdBy.lastName}`.trim() : '';
-    const shopName = p.createdBy?.businessDetails?.businessName || '';
-    
-    return [
-      p._id,
-      `"${(p.title || '').replace(/"/g, '""')}"`,
-      `"${(p.slug || '').replace(/"/g, '""')}"`,
-      `"${(p.description || '').replace(/"/g, '""')}"`,
-      p.price || 0,
-      p.originalPrice || '',
-      p.discount || 0,
-      p.discountType || '',
-      `"${p.category?.name || ''}"`,
-      p.stockQuantity || 0,
-      performance.currentStock || p.stockQuantity || 0,
-      p.productType || '',
-      p.status || '',
-      p.organic ? 'Yes' : 'No',
-      p.featured ? 'Yes' : 'No',
-      `"${tags}"`,
-      `"${productImages}"`,
-      performance.views || 0,
-      sales.totalSold,
-      sales.totalRevenue || 0,
-      performance.rating || 0,
-      `"${p.farmName || shopName}"`,
-      p.adminApproved ? 'Yes' : 'No',
-      p.createdAt ? new Date(p.createdAt).toISOString() : '',
-      p.updatedAt ? new Date(p.updatedAt).toISOString() : ''
-    ].join(',');
-  }).join("\n");
+  const csvHeaders =
+    "ID,Title,Slug,Description,Price,Original Price,Discount,Discount Type,Category,Stock Quantity,Current Stock,Product Type,Status,Organic,Featured,Tags,Product Images,Views,Total Sales,Total Revenue,Rating,Farm Name,Admin Approved,Created At,Updated At\n";
 
-  const timestamp = new Date().toISOString().split('T')[0];
+  const csvRows = products
+    .map((p) => {
+      const performance = performanceMap[p._id.toString()] || {};
+      const sales = salesMap[p._id.toString()] || {
+        totalSold: 0,
+        totalRevenue: 0,
+      };
+      const productImages = (p.productImages || [])
+        .map((img) => getDirectUrl(`products/${img}`))
+        .join("; ");
+      const tags = (p.tags || []).join("; ");
+      const seller = p.createdBy
+        ? `${p.createdBy.firstName} ${p.createdBy.lastName}`.trim()
+        : "";
+      const shopName = p.createdBy?.businessDetails?.businessName || "";
+
+      return [
+        p._id,
+        `"${(p.title || "").replace(/"/g, '""')}"`,
+        `"${(p.slug || "").replace(/"/g, '""')}"`,
+        `"${(p.description || "").replace(/"/g, '""')}"`,
+        p.price || 0,
+        p.originalPrice || "",
+        p.discount || 0,
+        p.discountType || "",
+        `"${p.category?.name || ""}"`,
+        p.stockQuantity || 0,
+        performance.currentStock || p.stockQuantity || 0,
+        p.productType || "",
+        p.status || "",
+        p.organic ? "Yes" : "No",
+        p.featured ? "Yes" : "No",
+        `"${tags}"`,
+        `"${productImages}"`,
+        performance.views || 0,
+        sales.totalSold,
+        sales.totalRevenue || 0,
+        performance.rating || 0,
+        `"${p.farmName || shopName}"`,
+        p.adminApproved ? "Yes" : "No",
+        p.createdAt ? new Date(p.createdAt).toISOString() : "",
+        p.updatedAt ? new Date(p.updatedAt).toISOString() : "",
+      ].join(",");
+    })
+    .join("\n");
+
+  const timestamp = new Date().toISOString().split("T")[0];
   const filename = `products-export-${timestamp}.csv`;
 
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-  res.send('\uFEFF' + csvHeaders + csvRows); // BOM for Excel compatibility
+  res.send("\uFEFF" + csvHeaders + csvRows); // BOM for Excel compatibility
 });
 
 // CSV Export

@@ -159,40 +159,45 @@ export const validatePromoCode = catchAsync(async (req, res, next) => {
   if (req.user && req.user.role !== "user") {
     return next(new AppError("Only customers can validate promo codes", 403));
   }
-  
-  const { code, subtotal, userId } = req.body;
-  
+
+  let { code, subtotal } = req.body;
+
+  code = code.trim();
+  const userId = req.user.id;
+
   if (!code) return next(new AppError("Promo code is required", 400));
-  
+
   const promo = await PromoCode.findOne({ code, isActive: true });
   if (!promo) return next(new AppError("Invalid promo code", 400));
-  
+
   // Check expiry
   if (promo.expiresAt && new Date(promo.expiresAt) < new Date()) {
     return next(new AppError("Promo code has expired", 400));
   }
-  
+
   // Check min order amount
   if (promo.minOrderAmount && subtotal < promo.minOrderAmount) {
-    return next(new AppError(`Minimum order amount is $${promo.minOrderAmount}`, 400));
+    return next(
+      new AppError(`Minimum order amount is $${promo.minOrderAmount}`, 400),
+    );
   }
-  
+
   // Check total usage limit
   if (promo.usageLimit && promo.usedCount >= promo.usageLimit) {
     return next(new AppError("Promo code usage limit reached", 400));
   }
-  
+
   // Check per-user limit
   if (userId) {
     const userUsageCount = await CustomerPromoCodeUse.countDocuments({
       user_id: userId,
-      promoCodeId: promo._id
+      promoCodeId: promo._id,
     });
     if (userUsageCount >= promo.perUserLimit) {
       return next(new AppError("You have already used this promo code", 400));
     }
   }
-  
+
   // Calculate discount
   let discount = 0;
   if (promo.type === "fixed") {
@@ -200,12 +205,12 @@ export const validatePromoCode = catchAsync(async (req, res, next) => {
   } else if (promo.type === "percentage") {
     discount = (subtotal * promo.discount) / 100;
   }
-  
+
   res.status(200).json({
     status: "success",
     valid: true,
     discount,
-    promoCode: promo
+    promoCode: promo,
   });
 });
 
@@ -215,43 +220,50 @@ export const applyPromoCode = catchAsync(async (req, res, next) => {
   if (!req.user || req.user.role !== "user") {
     return next(new AppError("Only customers can apply promo codes", 403));
   }
-  
+
   const { promoCodeId, userId, purchaseId } = req.body;
-  
+
   // Verify the requesting user matches the userId in request body
   if (userId !== req.user._id.toString()) {
-    return next(new AppError("Unauthorized to apply promo code for another user", 403));
+    return next(
+      new AppError("Unauthorized to apply promo code for another user", 403),
+    );
   }
-  
+
   const session = await mongoose.startSession();
   session.startTransaction();
-  
+
   try {
     const promo = await PromoCode.findById(promoCodeId).session(session);
     if (!promo) throw new AppError("Promo code not found", 404);
-    
+
     // Record usage
-    await CustomerPromoCodeUse.create([{
-      user_id: userId,
-      promoCodeId: promoCodeId,
-      purchase_id: purchaseId
-    }], { session });
-    
+    await CustomerPromoCodeUse.create(
+      [
+        {
+          user_id: userId,
+          promoCodeId: promoCodeId,
+          purchase_id: purchaseId,
+        },
+      ],
+      { session },
+    );
+
     // Update promo code usage count
     await PromoCode.findByIdAndUpdate(
       promoCodeId,
-      { 
-        $inc: { usedCount: 1 }
+      {
+        $inc: { usedCount: 1 },
       },
-      { session }
+      { session },
     );
-    
+
     await session.commitTransaction();
     session.endSession();
-    
+
     res.status(200).json({
       status: "success",
-      message: "Promo code applied successfully"
+      message: "Promo code applied successfully",
     });
   } catch (err) {
     await session.abortTransaction();
@@ -263,19 +275,20 @@ export const applyPromoCode = catchAsync(async (req, res, next) => {
 // =================== GET PROMO CODE USAGE ===================
 export const getPromoCodeUsage = catchAsync(async (req, res, next) => {
   const promoCodeId = req.params.id;
-  
+
   const usage = await CustomerPromoCodeUse.find({ promoCodeId })
     .populate("user_id", "name email")
     .populate("purchase_id", "totalAmount status");
-  
+
   const totalUses = usage.length;
-  const uniqueUsers = [...new Set(usage.map(u => u.user_id._id.toString()))].length;
-  
+  const uniqueUsers = [...new Set(usage.map((u) => u.user_id._id.toString()))]
+    .length;
+
   res.status(200).json({
     status: "success",
     totalUses,
     uniqueUsers,
-    usageDetails: usage
+    usageDetails: usage,
   });
 });
 

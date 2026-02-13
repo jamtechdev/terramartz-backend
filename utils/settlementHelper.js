@@ -11,24 +11,20 @@
  * @param {Date} date - The date of the order
  * @returns {Date} - The scheduled settlement date (Wednesday)
  */
-export const calculateSettlementDate = (date = new Date()) => {
+export const calculateSettlementDate = (date) => {
   const d = new Date(date);
-  const day = d.getDay(); // 0 is Sunday, 1 is Monday...
+  // 0 = Sun, 1 = Mon, 2 = Tue, 3 = Wed, ...
+  const day = d.getDay();
 
-  // Calculate days until the Sunday of this week
-  // If it's Sunday (0), it's 0 days away.
-  // If it's Monday (1), it's 6 days away.
-  const daysUntilSunday = day === 0 ? 0 : 7 - day;
+  // Calculate days until next Wednesday (3)
+  // If today is Wednesday (3), we want next Wednesday (+7 days)
+  // If today is Tuesday (2), we want tomorrow (+1 day)
+  let daysUntilWednesday = 3 - day;
+  if (daysUntilWednesday <= 0) {
+    daysUntilWednesday += 7;
+  }
 
-  const sundayOfPeriod = new Date(d);
-  sundayOfPeriod.setDate(d.getDate() + daysUntilSunday);
-
-  // Settlement is the Wednesday (3 days) after that Sunday
-  const settlementDate = new Date(sundayOfPeriod);
-  settlementDate.setDate(sundayOfPeriod.getDate() + 3);
-
-  // Reset time to midnight for consistency
-  settlementDate.setHours(0, 0, 0, 0);
-
-  return settlementDate;
+  d.setDate(d.getDate() + daysUntilWednesday);
+  d.setHours(0, 0, 0, 0); // Reset time to midnight
+  return d;
 };

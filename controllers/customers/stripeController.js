@@ -471,7 +471,11 @@ export const webhookPayment = async (req, res, next) => {
 
       // ✅ Create SellerSettlement record
       const commissionAmount = totalAmount - platformFeeAmount;
-      const scheduledSettlementDate = calculateSettlementDate(new Date());
+
+      const orderDate = new Date();
+      const maturityDate = new Date(orderDate);
+      maturityDate.setDate(maturityDate.getDate() + 3); // 3 Days Buffer
+      const scheduledSettlementDate = calculateSettlementDate(maturityDate);
 
       // Get seller from first product
       const sellerId = purchaseProducts[0]?.seller;
@@ -1709,7 +1713,11 @@ const createPurchaseFromPaymentIntent = async (paymentIntent) => {
       // ✅ Create SellerSettlement record
       const platformFeeAmount = Number(metadata.platformFeeAmount) || 0;
       const commissionAmount = totalAmount - platformFeeAmount;
-      const scheduledSettlementDate = calculateSettlementDate(new Date());
+
+      const orderDate = new Date();
+      const maturityDate = new Date(orderDate);
+      maturityDate.setDate(maturityDate.getDate() + 3); // 3 Days Buffer
+      const scheduledSettlementDate = calculateSettlementDate(maturityDate);
 
       // Get seller from first product (assuming single seller per order as per existing logic)
       const sellerId = purchaseProducts[0]?.seller;
@@ -2134,12 +2142,136 @@ const handleDisputeClosed = async (dispute) => {
   }
 };
 
+// ✅ Customer Requests a Refund (Does NOT move money, just updates status)
+export const requestRefundByCustomer = catchAsync(async (req, res, next) => {
+  const { orderId, amount, reason } = req.body;
+  const userId = req.user.id; // From auth middleware
+
+  // 1. Find the order and ensure it belongs to this user
+  const purchase = await Purchase.findOne({ orderId, buyer: userId });
+
+  if (!purchase) {
+    return next(new AppError("Order not found or access denied", 404));
+  }
+
+  // 2. Validate Status
+  if (purchase.status !== "delivered") {
+    return next(new AppError("Only delivered orders can be refunded", 400));
+  }
+  if (
+    purchase.paymentStatus === "refunded" ||
+    purchase.paymentStatus === "return_requested"
+  ) {
+    return next(new AppError("Refund already requested or processed", 400));
+  }
+
+  // 3. Check 3-Day Buffer (Server-side validation matches your settlement logic)
+  const orderDate = new Date(purchase.createdAt);
+  const deadline = new Date(orderDate);
+  deadline.setDate(deadline.getDate() + 3); // 3 Days
+
+  if (new Date() > deadline) {
+    return next(new AppError("Refund window has expired (3 days)", 400));
+  }
+
+  // 4. Update Order Status
+  // We use a specific status so the Seller knows an action is required
+  purchase.status = "return_requested";
+
+  // We can store the requested info in the refundReason field temporarily
+  // or add new fields like 'returnRequestReason' to your schema if you prefer.
+  purchase.refundReason = reason;
+  purchase.refundAmount = amount; // Storing requested amount (not refunded yet)
+
+  // Add to Timeline
+  purchase.orderTimeline.push({
+    event: "Return Requested",
+    timestamp: new Date(),
+    location: "Customer",
+    notes: `Reason: ${reason}, Amount: $${amount}`,
+  });
+
+  await purchase.save();
+
+  // 5. Notify Seller (Crucial Step)
+  try {
+    const { Notification } =
+      await import("../../models/common/notification.js");
+
+    // Get unique sellers involved
+    const sellerIds = [...new Set(purchase.products.map((p) => p.seller))];
+
+    for (const sellerId of sellerIds) {
+      await Notification.create({
+        user: sellerId,
+        type: "return_request",
+        title: "Return Requested",
+        message: `Customer has requested a return for Order #${orderId}. Reason: ${reason}`,
+        orderId: orderId,
+        order: purchase._id,
+      });
+    }
+  } catch (err) {
+    console.error("Failed to send return notification:", err);
+  }
+
+  res.status(200).json({
+    status: "success",
+    message: "Refund request submitted. The seller will review your request.",
+    order: purchase,
+  });
+});
+
 // 🔹 Manual Refund Controller (for admin/seller initiated refunds)
 export const createRefund = catchAsync(async (req, res, next) => {
-  const { orderId, amount, reason } = req.body;
+  const { orderId, amount, reason, action } = req.body;
 
-  // Find the purchase
+  // 1. Find the purchase
   const purchase = await Purchase.findOne({ orderId });
+
+  // Handle Refund/Return Rejection
+  if (action === "reject") {
+    if (!purchase) {
+      return next(new AppError("Order not found", 404));
+    }
+
+    if (purchase.status !== "return_requested") {
+      return next(new AppError("Order is not in return_requested status", 400));
+    }
+
+    purchase.status = "return_rejected";
+    purchase.orderTimeline.push({
+      event: "Return Rejected",
+      timestamp: new Date(),
+      location: "Admin/Seller",
+      notes: `Reason: ${reason || "Refund rejected"}`,
+    });
+
+    await purchase.save();
+
+    // Notify Customer about rejection
+    try {
+      const { Notification } =
+        await import("../../models/common/notification.js");
+
+      await Notification.create({
+        user: purchase.buyer,
+        type: "return_rejected",
+        title: "Return Request Rejected",
+        message: `Your return request for Order #${orderId} has been rejected. Reason: ${reason || "Refund rejected"}`,
+        orderId: orderId,
+        order: purchase._id,
+      });
+    } catch (err) {
+      console.error("Failed to send rejection notification:", err);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Return request rejected successfully",
+      order: purchase,
+    });
+  }
 
   if (!purchase) {
     return next(new AppError("Order not found", 404));
@@ -2154,33 +2286,31 @@ export const createRefund = catchAsync(async (req, res, next) => {
     return next(new AppError("Order already refunded", 400));
   }
 
-  // Calculate refund amount
+  // 2. Calculate refund details
   const refundAmount = amount || purchase.totalAmount;
   const isPartial = amount && amount < purchase.totalAmount;
 
-  // ✅ Get platform fee information
+  // Get platform fee information
   const platformFeeAmount = purchase.platformFeeAmount || 0;
-  const hasPlatformFee = platformFeeAmount > 0;
 
-  // ✅ Calculate platform fee refund
+  // Calculate platform fee refund (Internal calculation)
   let platformFeeRefund = 0;
-  if (hasPlatformFee) {
+  if (platformFeeAmount > 0) {
     if (isPartial) {
-      // Proportional platform fee reversal
       const refundPercentage = refundAmount / purchase.totalAmount;
       platformFeeRefund = platformFeeAmount * refundPercentage;
       platformFeeRefund = Math.round(platformFeeRefund * 100) / 100;
     } else {
-      // Full platform fee reversal
       platformFeeRefund = platformFeeAmount;
     }
   }
 
-  // ✅ Create refund in Stripe with fee reversal
+  // 3. Create refund in Stripe
+  // Since we hold funds and transfer manually via Cron, this is a simple platform refund.
   const refundConfig = {
     payment_intent: purchase.paymentIntentId,
     amount: Math.round(refundAmount * 100), // Convert to cents
-    reason: reason || "requested_by_customer",
+    reason: "requested_by_customer",
     metadata: {
       orderId: purchase.orderId,
       refundType: isPartial ? "partial" : "full",
@@ -2188,39 +2318,22 @@ export const createRefund = catchAsync(async (req, res, next) => {
     },
   };
 
-  // ✅ If there's a platform fee and this is a Stripe Connect payment, reverse it
-  if (hasPlatformFee && platformFeeRefund > 0) {
-    refundConfig.reverse_transfer = false; // Don't reverse transfer (seller keeps their portion)
-    refundConfig.refund_application_fee = true; // But refund the platform fee
-  }
-
   const refund = await stripe.refunds.create(refundConfig);
 
-  // Update will be handled by webhook (charge.refunded event)
-  // But we can update immediately here as well
+  // 4. Update Purchase Record
   purchase.paymentStatus = isPartial ? "partially_refunded" : "refunded";
-  purchase.refundAmount = refundAmount;
+
+  // purchase.refundAmount = (purchase.refundAmount || 0) + refundAmount;
   purchase.refundedAt = new Date();
   purchase.platformFeeRefunded =
-    (purchase.platformFeeRefunded || 0) + platformFeeRefund; // ✅ Track cumulative platform fee refund
+    (purchase.platformFeeRefunded || 0) + platformFeeRefund;
 
   purchase.orderTimeline.push({
-    event: isPartial ? "Partial Refund Initiated" : "Full Refund Initiated",
+    event: isPartial ? "Partial Refund Approved" : "Full Refund Approved",
     timestamp: new Date(),
     location: "Admin/Seller",
-    notes: `Reason: ${reason || "Customer request"}, Amount: $${refundAmount.toFixed(2)}${hasPlatformFee ? `, Platform fee reversed: $${platformFeeRefund.toFixed(2)}` : ""}`,
+    notes: `Reason: ${reason || "Manual Refund"}, Amount: $${refundAmount.toFixed(2)}`,
   });
-
-  if (!isPartial) {
-    purchase.status = "refunded";
-
-    // Restore stock
-    for (const item of purchase.products) {
-      await Product.findByIdAndUpdate(item.product, {
-        $inc: { stockQuantity: item.quantity },
-      });
-    }
-  }
 
   await purchase.save();
 

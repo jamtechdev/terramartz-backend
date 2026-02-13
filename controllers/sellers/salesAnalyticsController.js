@@ -80,11 +80,11 @@ export const getSellerCompleteAnalytics = catchAsync(async (req, res, next) => {
     if (end) matchPurchase.createdAt.$lte = end;
   }
 
-  console.log("\n========== SELLER COMPLETE ANALYTICS ==========");
-  console.log("📦 Seller ID:", sellerId, "Type:", typeof sellerId);
-  console.log("📦 Seller ID (String):", sellerIdString);
-  console.log("📦 Match Purchase:", JSON.stringify(matchPurchase, null, 2));
-  console.log("📦 Selected Year:", selectedYear);
+  // console.log("\n========== SELLER COMPLETE ANALYTICS ==========");
+  // console.log("📦 Seller ID:", sellerId, "Type:", typeof sellerId);
+  // console.log("📦 Seller ID (String):", sellerIdString);
+  // console.log("📦 Match Purchase:", JSON.stringify(matchPurchase, null, 2));
+  // console.log("📦 Selected Year:", selectedYear);
 
   // 🔹 Total Revenue - Use totalAmount (what user paid) for orders containing seller's products
   // First check what seller IDs exist in Purchase collection
@@ -98,7 +98,7 @@ export const getSellerCompleteAnalytics = catchAsync(async (req, res, next) => {
       },
     },
   ]);
-  console.log("📦 Sample seller IDs in Purchase:", sampleSellerIds);
+  // console.log("📦 Sample seller IDs in Purchase:", sampleSellerIds);
   
   const revenueAgg = await Purchase.aggregate([
     { $unwind: "$products" },
@@ -107,8 +107,8 @@ export const getSellerCompleteAnalytics = catchAsync(async (req, res, next) => {
     { $group: { _id: null, revenue: { $sum: "$totalAmount" } } },
   ]);
   const totalRevenue = revenueAgg[0]?.revenue || 0;
-  console.log("📦 Total Revenue:", totalRevenue);
-  console.log("📦 Revenue Agg result:", revenueAgg);
+  // console.log("📦 Total Revenue:", totalRevenue);
+  // console.log("📦 Revenue Agg result:", revenueAgg);
 
   // 🔹 Total Orders
   const totalOrdersAgg = await Purchase.aggregate([
@@ -210,14 +210,14 @@ export const getSellerCompleteAnalytics = catchAsync(async (req, res, next) => {
   const weeklyOrders = {};
   const monthlyOrders = {};
   
-  console.log("📦 Yearly Sales for", selectedYear, ":", yearlySales);
-  console.log("📦 Sales Aggregation result:", salesAgg[0] ? "Found data" : "No data");
+  // console.log("📦 Yearly Sales for", selectedYear, ":", yearlySales);
+  // console.log("📦 Sales Aggregation result:", salesAgg[0] ? "Found data" : "No data");
 
   if (salesAgg[0]) {
-    console.log("📦 Processing daily/weekly/monthly data...");
-    console.log("📦 Daily array length:", salesAgg[0].daily?.length || 0);
-    console.log("📦 Weekly array length:", salesAgg[0].weekly?.length || 0);
-    console.log("📦 Monthly array length:", salesAgg[0].monthly?.length || 0);
+    // console.log("📦 Processing daily/weekly/monthly data...");
+    // console.log("📦 Daily array length:", salesAgg[0].daily?.length || 0);
+    // console.log("📦 Weekly array length:", salesAgg[0].weekly?.length || 0);
+    // console.log("📦 Monthly array length:", salesAgg[0].monthly?.length || 0);
     
     salesAgg[0].daily.forEach((d) => {
       const dayKey = String(d.day);
@@ -235,8 +235,8 @@ export const getSellerCompleteAnalytics = catchAsync(async (req, res, next) => {
       monthlyOrders[monthKey] = (monthlyOrders[monthKey] || 0) + 1;
     });
     
-    console.log("📦 Daily Orders sample:", Object.keys(dailyOrders).slice(0, 5).map(k => `${k}: ${dailyOrders[k]}`));
-    console.log("📦 Monthly Orders:", monthlyOrders);
+    // console.log("📦 Daily Orders sample:", Object.keys(dailyOrders).slice(0, 5).map(k => `${k}: ${dailyOrders[k]}`));
+    // console.log("📦 Monthly Orders:", monthlyOrders);
   }
 
   res.status(200).json({
@@ -264,12 +264,12 @@ export const getSellerDashboardAnalytics = catchAsync(async (req, res) => {
   const sellerId = req.user._id;
     const { startDate, endDate, filterProducts = "false" } = req.query;
 
-    console.log("\n========== SELLER DASHBOARD ANALYTICS ==========");
-    console.log("📦 Seller ID:", sellerId, "Type:", typeof sellerId);
+    // console.log("\n========== SELLER DASHBOARD ANALYTICS ==========");
+    // console.log("📦 Seller ID:", sellerId, "Type:", typeof sellerId);
 
     // 🔹 Convert sellerId to String (Purchase and Product use String IDs)
     const sellerIdString = String(sellerId);
-    console.log("📦 Seller ID (String):", sellerIdString);
+    // console.log("📦 Seller ID (String):", sellerIdString);
 
     // 🔹 Parse startDate & endDate
     let start = startDate ? new Date(startDate) : null;
@@ -287,11 +287,11 @@ export const getSellerDashboardAnalytics = catchAsync(async (req, res) => {
       if (end) matchPurchase.createdAt.$lte = end;
     }
 
-    console.log("📦 Purchase match condition:", JSON.stringify(matchPurchase, null, 2));
+    // console.log("📦 Purchase match condition:", JSON.stringify(matchPurchase, null, 2));
 
     // 🔹 Total Sales - Use totalAmount (what user paid) for orders containing seller's products
     // Group by orderId first to get unique orders, then sum totalAmount
-    console.log("📦 Fetching total sales...");
+    // console.log("📦 Fetching total sales...");
     const salesAgg = await Purchase.aggregate([
       { $unwind: "$products" },
       { $match: matchPurchase },
@@ -299,7 +299,7 @@ export const getSellerDashboardAnalytics = catchAsync(async (req, res) => {
       { $group: { _id: null, revenue: { $sum: "$totalAmount" } } }, // Sum all order totalAmounts
     ]);
     const totalSales = salesAgg[0]?.revenue || 0;
-    console.log("📦 Total Sales:", totalSales);
+    // console.log("📦 Total Sales:", totalSales);
 
   // 🔹 Sales Growth this month
   const now = new Date();
@@ -315,7 +315,7 @@ export const getSellerDashboardAnalytics = catchAsync(async (req, res) => {
     999
   );
 
-  console.log("📦 Fetching current month sales...");
+  // console.log("📦 Fetching current month sales...");
   const currentMonthAgg = await Purchase.aggregate([
     { $unwind: "$products" },
     {
@@ -341,7 +341,7 @@ export const getSellerDashboardAnalytics = catchAsync(async (req, res) => {
     999
   );
 
-  console.log("📦 Fetching last month sales...");
+  // console.log("📦 Fetching last month sales...");
   const lastMonthAgg = await Purchase.aggregate([
     { $unwind: "$products" },
     {
@@ -372,8 +372,8 @@ export const getSellerDashboardAnalytics = catchAsync(async (req, res) => {
     if (end) productMatch.createdAt.$lte = end;
   }
 
-  console.log("📦 Product match condition:", JSON.stringify(productMatch, null, 2));
-  console.log("📦 Fetching product counts...");
+  // console.log("📦 Product match condition:", JSON.stringify(productMatch, null, 2));
+  // console.log("📦 Fetching product counts...");
 
   // 🔹 Total Products & Active Products
   const productCounts = await Product.aggregate([
@@ -391,11 +391,11 @@ export const getSellerDashboardAnalytics = catchAsync(async (req, res) => {
   const totalProducts = productCounts[0]?.totalProducts || 0;
   const activeProducts = productCounts[0]?.activeProducts || 0;
 
-  console.log("📦 Total Products:", productCounts[0]?.totalProducts || 0);
-  console.log("📦 Active Products:", productCounts[0]?.activeProducts || 0);
+  // console.log("📦 Total Products:", productCounts[0]?.totalProducts || 0);
+  // console.log("📦 Active Products:", productCounts[0]?.activeProducts || 0);
 
   // 🔹 Top Selling Products (by quantity sold)
-  console.log("📦 Fetching top selling products...");
+  // console.log("📦 Fetching top selling products...");
   const topSellingAgg = await Purchase.aggregate([
     { $unwind: "$products" },
     { $match: matchPurchase },
@@ -427,8 +427,8 @@ export const getSellerDashboardAnalytics = catchAsync(async (req, res) => {
     };
   });
 
-  console.log("📦 Top selling products count:", topSelling.length);
-  console.log("==========================================\n");
+  // console.log("📦 Top selling products count:", topSelling.length);
+  // console.log("==========================================\n");
 
   // 🔹 Get active/pending orders count
   // Active orders = orders with paymentStatus paid/pending and status not delivered
@@ -501,16 +501,16 @@ export const getSellerDashboardAnalytics = catchAsync(async (req, res) => {
     }
   }
 
-  console.log("📦 Final analytics data:", {
-    totalSales,
-    salesGrowth: parseFloat(salesGrowth),
-    totalProducts,
-    activeProducts,
-    activeOrders,
-    pendingOrders,
-    avgRating,
-    totalReviews,
-  });
+  // console.log("📦 Final analytics data:", {
+  //   totalSales,
+  //   salesGrowth: parseFloat(salesGrowth),
+  //   totalProducts,
+  //   activeProducts,
+  //   activeOrders,
+  //   pendingOrders,
+  //   avgRating,
+  //   totalReviews,
+  // });
 
   res.status(200).json({
     status: "success",
@@ -537,8 +537,8 @@ export const getBestSellers = catchAsync(async (req, res, next) => {
   eightDaysAgo.setDate(eightDaysAgo.getDate() - 8);
   eightDaysAgo.setHours(0, 0, 0, 0);
 
-  console.log("\n========== BEST SELLERS - CALCULATING ==========");
-  console.log("📦 Date range: Last 8 days from", eightDaysAgo.toISOString());
+  // console.log("\n========== BEST SELLERS - CALCULATING ==========");
+  // console.log("📦 Date range: Last 8 days from", eightDaysAgo.toISOString());
 
   // Get products with actual sales from Purchase collection (last 8 days)
   const actualSalesData = await Purchase.aggregate([
@@ -560,7 +560,7 @@ export const getBestSellers = catchAsync(async (req, res, next) => {
     { $limit: 10 }, // Get top 10 by actual sales
   ]);
 
-  console.log("📦 Actual sales from Purchase (last 8 days):", JSON.stringify(actualSalesData, null, 2));
+  // console.log("📦 Actual sales from Purchase (last 8 days):", JSON.stringify(actualSalesData, null, 2));
 
   // Create a map for quick lookup of sales count
   const salesCountMap = {};
@@ -570,7 +570,7 @@ export const getBestSellers = catchAsync(async (req, res, next) => {
 
   // Get product IDs that have actual sales
   const productIdsWithSales = actualSalesData.map((item) => String(item._id));
-  console.log("📦 Product IDs with sales:", productIdsWithSales);
+  // console.log("📦 Product IDs with sales:", productIdsWithSales);
 
   let topProducts;
   
@@ -596,7 +596,18 @@ export const getBestSellers = catchAsync(async (req, res, next) => {
       },
       { $unwind: { path: "$performance", preserveNullAndEmptyArrays: true } },
 
-      // 2️⃣ Join seller info from User collection
+      // // 2️⃣ Join category info from Category collection
+      {
+        $lookup: {
+          from: "categories",
+          localField: "category",
+          foreignField: "_id",
+          as: "categoryDetails",
+        },
+      },
+      { $unwind: { path: "$categoryDetails", preserveNullAndEmptyArrays: true } },
+
+      // 3️⃣ Join seller info from User collection
       {
         $lookup: {
           from: "users",
@@ -607,7 +618,7 @@ export const getBestSellers = catchAsync(async (req, res, next) => {
       },
       { $unwind: { path: "$seller", preserveNullAndEmptyArrays: true } },
 
-      // 3️⃣ Project required fields
+      // 4️⃣ Project required fields
       {
         $project: {
           _id: 1,
@@ -616,7 +627,7 @@ export const getBestSellers = catchAsync(async (req, res, next) => {
           description: 1,
           price: 1,
           originalPrice: 1,
-          category: 1,
+          category: "$categoryDetails",
           stockQuantity: 1,
           productImages: 1,
           tags: 1,
@@ -662,14 +673,14 @@ export const getBestSellers = catchAsync(async (req, res, next) => {
     // Limit to top 3
     topProducts = topProducts.slice(0, 3);
     
-    console.log("📦 Top products after sorting:", topProducts.map(p => ({ 
-      id: p._id, 
-      title: p.title, 
-      soldLast8Days: p.soldLast8Days 
-    })));
+    // console.log("📦 Top products after sorting:", topProducts.map(p => ({ 
+    //   id: p._id, 
+    //   title: p.title, 
+    //   soldLast8Days: p.soldLast8Days 
+    // })));
   } else {
     // Fallback: Use ProductPerformance if no recent sales
-    console.log("⚠️ No products with sales in last 8 days, using ProductPerformance fallback");
+    // console.log("⚠️ No products with sales in last 8 days, using ProductPerformance fallback");
     topProducts = await ProductPerformance.aggregate([
       // 1️⃣ Join products collection
       {
@@ -700,7 +711,18 @@ export const getBestSellers = catchAsync(async (req, res, next) => {
         },
       },
 
-      // 4️⃣ Join seller info from User collection
+      // 4️⃣ Join category info from Category collection
+      {
+        $lookup: {
+          from: "categories",
+          localField: "category",
+          foreignField: "_id",
+          as: "categoryDetails",
+        },
+      },
+      { $unwind: { path: "$categoryDetails", preserveNullAndEmptyArrays: true } },
+
+      // 5️⃣ Join seller info from User collection
       {
         $lookup: {
           from: "users",
@@ -711,7 +733,7 @@ export const getBestSellers = catchAsync(async (req, res, next) => {
       },
       { $unwind: { path: "$seller", preserveNullAndEmptyArrays: true } },
 
-      // 5️⃣ Project only required fields + shopSlug
+      // 6️⃣ Project only required fields + shopSlug
       {
         $project: {
           _id: 1,
@@ -720,7 +742,7 @@ export const getBestSellers = catchAsync(async (req, res, next) => {
           description: 1,
           price: 1,
           originalPrice: 1,
-          category: 1,
+          category: "$categoryDetails",
           stockQuantity: 1,
           productImages: 1,
           tags: 1,
@@ -755,12 +777,12 @@ export const getBestSellers = catchAsync(async (req, res, next) => {
     return next(new AppError("No best-selling products found", 404));
   }
 
-  console.log("📦 Final top products:", topProducts.map(p => ({ 
-    id: p._id, 
-    title: p.title, 
-    soldLast8Days: p.soldLast8Days || 0 
-  })));
-  console.log("==========================================\n");
+  // console.log("📦 Final top products:", topProducts.map(p => ({ 
+  //   id: p._id, 
+  //   title: p.title, 
+  //   soldLast8Days: p.soldLast8Days || 0 
+  // })));
+  // console.log("==========================================\n");
 
   // 🔹 Apply presigned URLs for product images and shop picture
   topProducts = await Promise.all(
@@ -782,7 +804,7 @@ export const getBestSellers = catchAsync(async (req, res, next) => {
       // soldLast8Days is already added above
       const soldLast8Days = p.soldLast8Days || 0;
       
-      console.log(`📦 Product "${p.title || 'Unknown'}" (${p._id}): Sold=${soldLast8Days} (Last 8 days)`);
+      // console.log(`📦 Product "${p.title || 'Unknown'}" (${p._id}): Sold=${soldLast8Days} (Last 8 days)`);
 
       return {
         ...p,

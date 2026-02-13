@@ -7,16 +7,16 @@ import AppError from "../../utils/apperror.js";
 export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
   // Use _id instead of id to ensure ObjectId format matching
   const sellerId = req.user._id || req.user.id;
-  
+
   if (!sellerId) {
     return next(new AppError("Seller not authenticated", 401));
   }
 
-  console.log("\n========== GET SELLER ORDERS ==========");
-  console.log("📦 Seller ID:", sellerId);
-  console.log("📦 Seller ID type:", typeof sellerId);
-  console.log("📦 Seller _id:", req.user._id);
-  console.log("📦 Seller id:", req.user.id);
+  // console.log("\n========== GET SELLER ORDERS ==========");
+  // console.log("📦 Seller ID:", sellerId);
+  // console.log("📦 Seller ID type:", typeof sellerId);
+  // console.log("📦 Seller _id:", req.user._id);
+  // console.log("📦 Seller id:", req.user.id);
 
   const page = parseInt(req.query.page, 10) || 1;
   const limit = parseInt(req.query.limit, 10) || 10;
@@ -29,13 +29,13 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
 
   // Import mongoose for ObjectId conversion (only once)
   const mongoose = (await import("mongoose")).default;
-  
+
   // Purchase model stores seller as String, but old orders might have ObjectId
   // So we need to match both String and ObjectId formats
   const sellerIdString = String(sellerId);
   const sellerIdAlt1 = req.user._id ? String(req.user._id) : null;
   const sellerIdAlt2 = req.user.id ? String(req.user.id) : null;
-  
+
   // Also try ObjectId format for backward compatibility
   let sellerObjectId = null;
   try {
@@ -46,26 +46,26 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
     // Ignore
   }
 
-  console.log("📦 Seller IDs for matching (String + ObjectId):", {
-    sellerIdString,
-    sellerIdAlt1,
-    sellerIdAlt2,
-    sellerObjectId,
-    originalSellerId: sellerId,
-    originalType: typeof sellerId
-  });
+  // console.log("📦 Seller IDs for matching (String + ObjectId):", {
+  //   sellerIdString,
+  //   sellerIdAlt1,
+  //   sellerIdAlt2,
+  //   sellerObjectId,
+  //   originalSellerId: sellerId,
+  //   originalType: typeof sellerId
+  // });
 
   const ordersAggregation = [
     { $unwind: "$products" },
-    { 
-      $match: { 
+    {
+      $match: {
         $or: [
           { "products.seller": sellerIdString },
           ...(sellerIdAlt1 ? [{ "products.seller": sellerIdAlt1 }] : []),
           ...(sellerIdAlt2 ? [{ "products.seller": sellerIdAlt2 }] : []),
           ...(sellerObjectId ? [{ "products.seller": sellerObjectId }] : []),
-        ].filter(Boolean)
-      } 
+        ].filter(Boolean),
+      },
     },
 
     // ProductPerformance
@@ -94,12 +94,12 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
           $cond: {
             if: { $gt: [{ $size: "$products.productInfo" }, 0] },
             then: { $arrayElemAt: ["$products.productInfo", 0] },
-            else: null
-          }
-        }
-      }
+            else: null,
+          },
+        },
+      },
     },
-    
+
     // Product Seller info (hide password)
     {
       $lookup: {
@@ -116,10 +116,10 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
           $cond: {
             if: { $gt: [{ $size: "$products.productInfo.sellerInfo" }, 0] },
             then: { $arrayElemAt: ["$products.productInfo.sellerInfo", 0] },
-            else: null
-          }
-        }
-      }
+            else: null,
+          },
+        },
+      },
     },
 
     // Buyer info (hide password)
@@ -141,7 +141,21 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
         status: 1,
         createdAt: 1,
         updatedAt: 1,
-        totalAmount: 1, // Include totalAmount
+        totalAmount: 1,
+        refundAmount: 1,
+        refundedAt: 1,
+        refundReason: 1,
+        refundRequestedAt: 1,
+        refundRejectReason: 1,
+        trackingNumber: 1,
+        disputeId: 1,
+        disputeStatus: 1,
+        disputeReason: 1,
+        disputeAmount: 1,
+        disputeCreatedAt: 1,
+        disputeClosedAt: 1,
+        platformFeeAmount: 1,
+        platformFeeRefunded: 1,
         products: {
           product: 1,
           quantity: 1,
@@ -176,7 +190,8 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
               accountType: "$products.productInfo.sellerInfo.accountType",
               sellerProfile: "$products.productInfo.sellerInfo.sellerProfile",
               status: "$products.productInfo.sellerInfo.status",
-              isAccountVerified: "$products.productInfo.sellerInfo.isAccountVerified",
+              isAccountVerified:
+                "$products.productInfo.sellerInfo.isAccountVerified",
               createdAt: "$products.productInfo.sellerInfo.createdAt",
               updatedAt: "$products.productInfo.sellerInfo.updatedAt",
             },
@@ -221,11 +236,25 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
         createdAt: { $first: "$createdAt" },
         updatedAt: { $first: "$updatedAt" },
         buyer: { $first: "$buyer" },
-        totalAmount: { $first: "$totalAmount" }, // Include totalAmount
-        products: { $push: "$products" }, // Collect all products for this order
-      }
+        totalAmount: { $first: "$totalAmount" },
+        refundAmount: { $first: "$refundAmount" },
+        refundedAt: { $first: "$refundedAt" },
+        refundReason: { $first: "$refundReason" },
+        refundRequestedAt: { $first: "$refundRequestedAt" },
+        refundRejectReason: { $first: "$refundRejectReason" },
+        trackingNumber: { $first: "$trackingNumber" },
+        disputeId: { $first: "$disputeId" },
+        disputeStatus: { $first: "$disputeStatus" },
+        disputeReason: { $first: "$disputeReason" },
+        disputeAmount: { $first: "$disputeAmount" },
+        disputeCreatedAt: { $first: "$disputeCreatedAt" },
+        disputeClosedAt: { $first: "$disputeClosedAt" },
+        platformFeeAmount: { $first: "$platformFeeAmount" },
+        platformFeeRefunded: { $first: "$platformFeeRefunded" },
+        products: { $push: "$products" },
+      },
     },
-    
+
     // ✅ শুধু এই লাইন পরিবর্তন (dynamic sort)
     { $sort: { createdAt: sortType } },
     { $skip: skip },
@@ -233,16 +262,16 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
   ];
 
   const orders = await Purchase.aggregate(ordersAggregation);
-  
-  console.log("📦 Aggregated orders count:", orders.length);
-  if (orders.length > 0) {
-    console.log("📦 Sample order structure:", JSON.stringify({
-      _id: orders[0]._id,
-      orderId: orders[0].orderId,
-      productsCount: orders[0].products?.length || 0,
-      firstProduct: orders[0].products?.[0] || null
-    }, null, 2));
-  }
+
+  // console.log("📦 Aggregated orders count:", orders.length);
+  // if (orders.length > 0) {
+  //   console.log("📦 Sample order structure:", JSON.stringify({
+  //     _id: orders[0]._id,
+  //     orderId: orders[0].orderId,
+  //     productsCount: orders[0].products?.length || 0,
+  //     firstProduct: orders[0].products?.[0] || null
+  //   }, null, 2));
+  // }
 
   // Count total orders with same matching logic (String + ObjectId for backward compatibility)
   const totalOrders = await Purchase.countDocuments({
@@ -251,47 +280,47 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
       ...(sellerIdAlt1 ? [{ "products.seller": sellerIdAlt1 }] : []),
       ...(sellerIdAlt2 ? [{ "products.seller": sellerIdAlt2 }] : []),
       ...(sellerObjectId ? [{ "products.seller": sellerObjectId }] : []),
-    ].filter(Boolean)
+    ].filter(Boolean),
   });
 
-  console.log("📦 Found orders:", orders.length);
-  console.log("📦 Total orders:", totalOrders);
+  // console.log("📦 Found orders:", orders.length);
+  // console.log("📦 Total orders:", totalOrders);
   if (orders.length > 0) {
     const firstOrder = orders[0];
-    console.log("📦 First order structure:", {
-      _id: firstOrder._id,
-      orderId: firstOrder.orderId,
-      productsIsArray: Array.isArray(firstOrder.products),
-      productsLength: Array.isArray(firstOrder.products) ? firstOrder.products.length : 'N/A',
-      firstProduct: firstOrder.products?.[0] ? {
-        product: firstOrder.products[0].product,
-        productInfo: firstOrder.products[0].productInfo ? {
-          _id: firstOrder.products[0].productInfo._id,
-          title: firstOrder.products[0].productInfo.title,
-          name: firstOrder.products[0].productInfo.name
-        } : null
-      } : null
-    });
-    console.log("📦 First order full products:", JSON.stringify(firstOrder.products || "No products", null, 2));
+    // console.log("📦 First order structure:", {
+    //   _id: firstOrder._id,
+    //   orderId: firstOrder.orderId,
+    //   productsIsArray: Array.isArray(firstOrder.products),
+    //   productsLength: Array.isArray(firstOrder.products) ? firstOrder.products.length : 'N/A',
+    //   firstProduct: firstOrder.products?.[0] ? {
+    //     product: firstOrder.products[0].product,
+    //     productInfo: firstOrder.products[0].productInfo ? {
+    //       _id: firstOrder.products[0].productInfo._id,
+    //       title: firstOrder.products[0].productInfo.title,
+    //       name: firstOrder.products[0].productInfo.name
+    //     } : null
+    //   } : null
+    // });
+    // console.log("📦 First order full products:", JSON.stringify(firstOrder.products || "No products", null, 2));
   } else {
-    console.log("⚠️ No orders found! Checking why...");
-    console.log("📦 Seller ID used in query:", {
-      sellerIdString,
-      sellerIdAlt1,
-      sellerIdAlt2,
-      originalSellerId: sellerId,
-      originalType: typeof sellerId
-    });
-    
+    // console.log("⚠️ No orders found! Checking why...");
+    // console.log("📦 Seller ID used in query:", {
+    //   sellerIdString,
+    //   sellerIdAlt1,
+    //   sellerIdAlt2,
+    //   originalSellerId: sellerId,
+    //   originalType: typeof sellerId
+    // });
+
     // Check if any orders exist with this seller
     const testQuery = await Purchase.aggregate([
       { $unwind: "$products" },
       { $group: { _id: "$products.seller", count: { $sum: 1 } } },
-      { $limit: 10 }
+      { $limit: 10 },
     ]);
-    console.log("📦 Sample seller IDs in database:", testQuery);
+    // console.log("📦 Sample seller IDs in database:", testQuery);
   }
-  console.log("========================================\n");
+  // console.log("========================================\n");
 
   res.status(200).json({
     status: "success",
@@ -320,7 +349,7 @@ export const updateOrderStatus = catchAsync(async (req, res, next) => {
 
   // 2️⃣ Find specific product for this seller
   const product = order.products.find(
-    (p) => p.product === productId && p.seller === sellerId
+    (p) => p.product === productId && p.seller === sellerId,
   );
   if (!product)
     return next(new AppError("You cannot update this product", 403));
@@ -329,7 +358,7 @@ export const updateOrderStatus = catchAsync(async (req, res, next) => {
   const latestEvent = product.timeline?.[product.timeline.length - 1]?.event;
   if (latestEvent === status) {
     return next(
-      new AppError(`Status "${status}" is already applied earlier!`, 400)
+      new AppError(`Status "${status}" is already applied earlier!`, 400),
     );
   }
 
@@ -349,7 +378,7 @@ export const updateOrderStatus = catchAsync(async (req, res, next) => {
 
   // 5️⃣ Update overall order status
   const allDelivered = order.products.every(
-    (p) => p.timeline[p.timeline.length - 1].event === "delivered"
+    (p) => p.timeline[p.timeline.length - 1].event === "delivered",
   );
 
   if (allDelivered) {
@@ -357,8 +386,8 @@ export const updateOrderStatus = catchAsync(async (req, res, next) => {
   } else if (
     order.products.some((p) =>
       ["shipped", "in_transit"].includes(
-        p.timeline[p.timeline.length - 1].event
-      )
+        p.timeline[p.timeline.length - 1].event,
+      ),
     )
   ) {
     order.status = "in_transit";
@@ -393,14 +422,15 @@ export const updateOrderStatus = catchAsync(async (req, res, next) => {
 
   // ✅ Send notification to buyer about status update
   try {
-    const { Notification } = await import("../../models/common/notification.js");
+    const { Notification } =
+      await import("../../models/common/notification.js");
     const { User } = await import("../../models/users.js");
     const { Product } = await import("../../models/seller/product.js");
-    
+
     const buyerId = String(order.buyer);
     const buyer = await User.findById(buyerId);
     const productInfo = await Product.findById(productId);
-    
+
     if (buyer) {
       const statusMessages = {
         processing: "Your order is now being processed",
@@ -410,8 +440,10 @@ export const updateOrderStatus = catchAsync(async (req, res, next) => {
         new: "Your order has been confirmed",
       };
 
-      const statusMessage = statusMessages[status] || `Your order status has been updated to ${status}`;
-      
+      const statusMessage =
+        statusMessages[status] ||
+        `Your order status has been updated to ${status}`;
+
       // Create notification in database
       await Notification.create({
         user: buyerId,
@@ -427,8 +459,8 @@ export const updateOrderStatus = catchAsync(async (req, res, next) => {
           trackingNumber: order.trackingNumber || null,
         },
       });
-      
-      console.log(`✅ Notification sent to buyer ${buyerId} for order ${order.orderId}`);
+
+      // console.log(`✅ Notification sent to buyer ${buyerId} for order ${order.orderId}`);
     }
   } catch (notifError) {
     console.error("⚠️ Failed to send notification:", notifError);

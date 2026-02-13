@@ -215,7 +215,7 @@ export const getAllCategories = catchAsync(async (req, res, next) => {
   // Check if user is logged in (from optionalProtect middleware or query param)
   const isLoggedIn = req.user ? true : req.query.loggedIn === "true";
   
-  let query = Category.find().populate("createdBy", "name email");
+  let query = Category.find({isActive: true}).populate("createdBy", "name email");
   const features = new APIFeatures(query, req.query).paginate();
   const categories = await features.query;
 

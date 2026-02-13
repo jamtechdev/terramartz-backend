@@ -5,9 +5,6 @@ import Stripe from "stripe";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-/**
- * Process all pending settlements that are due.
- */
 export const processSettlementsJob = async () => {
   try {
     const now = new Date();
@@ -15,66 +12,76 @@ export const processSettlementsJob = async () => {
       `⏰ [Cron] Starting settlement process at ${now.toISOString()}`,
     );
 
-    // Find all pending settlements that are due
+    // 1. Fetch ALL pending settlements (Positive AND Negative) that are due
     const pendingSettlements = await SellerSettlement.find({
       status: "pending",
       scheduledSettlementDate: { $lte: now },
-      commissionAmount: { $gt: 0 },
     });
 
     if (pendingSettlements.length === 0) {
-      console.log("⏰ [Cron] No pending settlements to process today.");
+      console.log("⏰ [Cron] No pending settlements to process.");
       return;
     }
 
-    console.log(
-      `⏰ [Cron] Processing ${pendingSettlements.length} settlement records.`,
-    );
-
-    // Group by seller
+    // 2. Group by Seller
     const settlementsBySeller = pendingSettlements.reduce((acc, settlement) => {
-      if (!acc[settlement.sellerId]) {
-        acc[settlement.sellerId] = [];
-      }
-      acc[settlement.sellerId].push(settlement);
+      const sId = settlement.sellerId;
+      if (!acc[sId]) acc[sId] = [];
+      acc[sId].push(settlement);
       return acc;
     }, {});
 
+    // 3. Process each seller
     for (const sellerId in settlementsBySeller) {
       const sellerSettlements = settlementsBySeller[sellerId];
+
+      // Calculate Net Amount (Sales - Refunds)
       const totalCommission = sellerSettlements.reduce(
         (sum, s) => sum + s.commissionAmount,
         0,
       );
+
       const roundedCommission = Math.round(totalCommission * 100) / 100;
+      console.log(
+        `Processing Seller ${sellerId}: Net Amount $${roundedCommission}`,
+      );
+
+      // 4. Handle Negative or Zero Balance
+      if (roundedCommission <= 0) {
+        console.log(
+          `⚠️ Seller ${sellerId} has negative/zero balance ($${roundedCommission}). Carrying over.`,
+        );
+        // Leave status as 'pending' so it gets calculated next week
+        continue;
+      }
 
       try {
         const seller = await User.findById(sellerId);
+
         if (!seller || !seller.sellerProfile?.stripeAccountId) {
-          console.error(
-            `⏰ [Cron] Failed for seller ${sellerId}: No connected Stripe account.`,
-          );
+          console.error(`❌ Seller ${sellerId} invalid or no Stripe account.`);
           continue;
         }
 
         console.log(
-          `⏰ [Cron] Transferring $${roundedCommission} to seller ${sellerId} (${seller.sellerProfile.stripeAccountId})`,
+          `💸 Transferring $${roundedCommission} to ${seller.sellerProfile.stripeAccountId}`,
         );
 
-        // Create Stripe Transfer
+        // 5. Create Stripe Transfer
         const transfer = await stripe.transfers.create({
-          amount: Math.round(roundedCommission * 100), // convert to cents
+          amount: Math.round(roundedCommission * 100),
           currency: "usd",
           destination: seller.sellerProfile.stripeAccountId,
-          description: `Automated settlement for period ending ${now.toDateString()}`,
+          description: `Settlement for ${now.toDateString()}`,
           metadata: {
             sellerId: sellerId,
-            settlementCount: sellerSettlements.length,
+            settlementCount: sellerSettlements.length.toString(),
           },
         });
 
-        // Update all settlements as settled
+        // 6. Update DB only after successful transfer
         const settlementIds = sellerSettlements.map((s) => s._id);
+
         await SellerSettlement.updateMany(
           { _id: { $in: settlementIds } },
           {
@@ -85,34 +92,32 @@ export const processSettlementsJob = async () => {
         );
 
         console.log(
-          `⏰ [Cron] Successfully settled $${roundedCommission} for seller ${sellerId}. Transfer ID: ${transfer.id}`,
+          `✅ Successfully settled $${roundedCommission} for seller ${sellerId}`,
         );
       } catch (error) {
-        console.error(
-          `⏰ [Cron] ❌ Failed to settle for seller ${sellerId}:`,
-          error.message,
-        );
+        if (error.code === "balance_insufficient") {
+          console.error(
+            `❌ Insufficient Platform funds to pay seller ${sellerId}. Will retry next cycle.`,
+          );
+        } else {
+          console.error(
+            `❌ Error settling for seller ${sellerId}:`,
+            error.message,
+          );
+        }
       }
     }
-
-    console.log("⏰ [Cron] Settlement process completed.");
   } catch (err) {
     console.error("⏰ [Cron] ❌ Critical error in settlement job:", err);
   }
 };
 
-/**
- * Initialize cron job to run every Wednesday at 00:01 AM
- * Cron expression: '1 0 * * 3'
- */
 export const startSettlementJob = () => {
   // Run every Wednesday at 00:01 AM
   const cronExpression = "1 0 * * 3";
-
   console.log("⏰ Settlement job scheduled: Every Wednesday at 00:01 AM");
 
   cron.schedule(cronExpression, async () => {
-    console.log("⏰ [Cron] Wednesday settlement job triggered!");
     await processSettlementsJob();
   });
 };

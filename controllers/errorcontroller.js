@@ -28,7 +28,7 @@ const handleJWTExpiredError = (err) =>
 //development error middleware
 function developmentError(err, req, res) {
   console.log("Global Error For ErrorController");
-  console.log(err.message);
+  console.log(err);
   // ✨ Log error
   // logger.error({
   //   timestamp: new Date().toISOString(),
