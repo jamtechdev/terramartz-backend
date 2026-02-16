@@ -132,6 +132,18 @@ const purchaseSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    refundReason: {
+      type: String,
+      default: null,
+    },
+    refundRequestedAt: {
+      type: Date,
+    },
+    refundRejectReason: {
+      type: String,
+      default: null,
+    },
+
     refundedAt: {
       type: Date,
     },
@@ -169,6 +181,9 @@ const purchaseSchema = new mongoose.Schema(
         "delivered",
         "cancelled",
         "refunded",
+        "return_requested",
+        "return_approved",
+        "return_rejected",
       ],
       default: "new",
     },

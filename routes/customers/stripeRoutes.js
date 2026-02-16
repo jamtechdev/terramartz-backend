@@ -17,6 +17,7 @@ router.post(
   stripeController.createOrderImmediately,
 );
 
+router.post("/refund-by-customer", stripeController.requestRefundByCustomer);
 router.post("/refund", stripeController.createRefund);
 
 // Get dispute details for an order

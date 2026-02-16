@@ -2,7 +2,10 @@ import "dotenv/config"; // automatically loads .env
 // import dotenv from "dotenv";
 import mongoose from "mongoose";
 import app from "./app.js";
-// dotenv.config({ path: "./.env" });
+import { startSettlementJob } from "./jobs/settlementJob.js";
+
+// Initialize scheduled jobs
+startSettlementJob();
 
 const DB = process.env.DATABASE.replace(
   "<password>",

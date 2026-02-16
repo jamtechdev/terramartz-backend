@@ -14,10 +14,10 @@ import {
 } from "../../controllers/sellers/promoCodeController.js";
 import { protect } from "../../controllers/authController.js";
 
-// Create a new promo code (admin or seller)
+// Create a new promo code seller)
 router.post("/", protect, createPromoCode);
 
-// Get list of promo codes (admin or seller)
+// Get list of promo codes seller)
 router.get("/", protect, getAllPromoCodes);
 
 // Get a single promo code by ID
@@ -30,7 +30,7 @@ router.patch("/:id", protect, updatePromoCode);
 router.delete("/:id", protect, deletePromoCode);
 
 // Validate promo code (no auth required)
-router.post("/validate", validatePromoCode);
+router.post("/validate", protect, validatePromoCode);
 
 // Apply promo code (customers only)
 router.post("/apply", protect, applyPromoCode);
