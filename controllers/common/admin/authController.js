@@ -62,20 +62,29 @@ export const protectAdmin = (module = null, requiredAccess = null) => {
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
     } catch (err) {
-      console.log(err);
+      console.log('JWT verification error:', err.message);
 
       return next(
         new AppError("Invalid or expired token. Please login again.", 401),
       );
     }
 
+    // Log decoded token for debugging
+    // console.log('Decoded token:', { id: decoded.id, role: decoded.role });
+
     // Find admin user by ID from token
     const user = await Admin.findOne({ _id: decoded.id });
     if (!user) {
+      // console.error(`Admin user not found for ID: ${decoded.id}`);
+      // console.error('Token payload:', decoded);
+      // console.error('Please ensure the user exists in the Admin collection and logged in through /api/admin/login');
+
       return next(
         new AppError("The user belonging to this token no longer exists.", 401),
       );
     }
+
+    // console.log(`Admin user found: ${user.email} (${user.role})`);
 
     // Verify account is active
     if (!user.isActive) {
