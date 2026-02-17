@@ -15,16 +15,36 @@ export const createBlogCategory = catchAsync(async (req, res, next) => {
 });
 
 export const getAllBlogCategories = catchAsync(async (req, res, next) => {
-  const features = new APIFeatures(BlogCategory.find(), req.query)
-    .filter()
-    .sort()
-    .limitFields()
-    .paginate();
+  const { search, status, page = 1, limit = 10 } = req.query;
+  const pageNum = Number(page);
+  const limitNum = Number(limit);
+  const skip = (pageNum - 1) * limitNum;
 
-  const categories = await features.query;
+  const match = {};
+  if (status) match.status = status;
+
+  if (search) {
+    const words = String(search).trim().split(/\s+/);
+    match.$and = words.map((word) => {
+      const regex = new RegExp(word, "i");
+      return {
+        $or: [{ name: regex }, { slug: regex }],
+      };
+    });
+  }
+
+  const total = await BlogCategory.countDocuments(match);
+
+  const categories = await BlogCategory.find(match)
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(limitNum);
 
   res.status(200).json({
     status: "success",
+    page: pageNum,
+    limit: limitNum,
+    total,
     results: categories.length,
     data: {
       categories,

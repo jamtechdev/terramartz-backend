@@ -17,22 +17,52 @@ export const createBlog = catchAsync(async (req, res, next) => {
 });
 
 export const getAllBlogsAdmin = catchAsync(async (req, res, next) => {
-  const features = new APIFeatures(Blog.find(), req.query)
-    .filter()
-    .sort()
-    .limitFields()
-    .paginate();
+  const { search, status, category, createdBy, page = 1, limit = 10 } = req.query;
+  const pageNum = Number(page);
+  const limitNum = Number(limit);
+  const skip = (pageNum - 1) * limitNum;
 
-  const blogs = await features.query.populate("category", "name slug");
+  const match = {};
+  if (status) match.status = status;
+  if (category) match.category = category;
+  if (createdBy) match.createdBy = createdBy;
+
+  if (search) {
+    const words = String(search).trim().split(/\s+/);
+    match.$and = words.map((word) => {
+      const regex = new RegExp(word, "i");
+      return {
+        $or: [
+          { title: regex },
+          { shortDescription: regex },
+          { content: regex },
+          { tags: { $in: [regex] } },
+        ],
+      };
+    });
+  }
+
+  const total = await Blog.countDocuments(match);
+
+  const blogs = await Blog.find(match)
+    .populate("category", "name slug")
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(limitNum);
 
   res.status(200).json({
     status: "success",
+    page: pageNum,
+    limit: limitNum,
+    total,
     results: blogs.length,
     data: {
       blogs,
     },
   });
 });
+
+
 
 export const getBlogAdmin = catchAsync(async (req, res, next) => {
   const blog = await Blog.findById(req.params.id).populate("category", "name slug");

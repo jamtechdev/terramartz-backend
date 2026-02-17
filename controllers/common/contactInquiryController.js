@@ -63,29 +63,55 @@ export const submitInquiry = catchAsync(async (req, res, next) => {
 
 // GET - Get All Inquiries (Authenticated - Admin Only)
 export const getAllInquiries = catchAsync(async (req, res, next) => {
-  // Build query based on user role
   const queryConditions = {};
-  
-  // Super Admin can see all tickets
+
   if (req.user.role !== "Super Admin") {
-    // Other admins can only see tickets assigned to them
     queryConditions.assignedAdmin = req.user._id;
   }
-  
-  // Apply additional filters from query params
-  const features = new APIFeatures(ContactInquiry.find(queryConditions), req.query)
+
+  if (req.query.search) {
+    const words = req.query.search.trim().split(/\s+/);
+    queryConditions.$and = words.map((word) => {
+      const regex = new RegExp(word, "i");
+      return {
+        $or: [
+          { fullName: regex },
+          { email: regex },
+          { phoneNumber: regex },
+          { subject: regex },
+          { message: regex },
+          { inquiryType: regex },
+        ],
+      };
+    });
+  }
+
+  const features = new APIFeatures(
+    ContactInquiry.find(queryConditions),
+    req.query
+  )
     .filter()
     .sort()
     .limitFields()
     .paginate();
 
-  // Populate assigned admin details
-  const inquiries = await features.query
-    .populate('assignedAdmin', 'name email role');
+  const inquiries = await features.query.populate(
+    "assignedAdmin",
+    "name email role"
+  );
+
+  const queryObj = { ...req.query };
+  ["page", "sort", "limit", "search"].forEach((el) => delete queryObj[el]);
+  let queryStr = JSON.stringify(queryObj);
+  queryStr = queryStr.replace(
+    /\b(gte|gt|lte|lt)\b/g,
+    (match) => `$${match}`
+  );
+  const advancedFilters = JSON.parse(queryStr);
 
   const total = await ContactInquiry.countDocuments({
     ...queryConditions,
-    ...features.queryString
+    ...advancedFilters,
   });
 
   res.status(200).json({
@@ -98,7 +124,7 @@ export const getAllInquiries = catchAsync(async (req, res, next) => {
       totalPages: Math.ceil(total / (req.query.limit * 1 || 10)),
     },
     data: {
-      inquiries: inquiries.map(inquiry => ({
+      inquiries: inquiries.map((inquiry) => ({
         _id: inquiry._id,
         fullName: inquiry.fullName,
         email: inquiry.email,
@@ -109,15 +135,17 @@ export const getAllInquiries = catchAsync(async (req, res, next) => {
         status: inquiry.status,
         respondedAt: inquiry.respondedAt,
         responseNotes: inquiry.responseNotes,
-        assignedAdmin: inquiry.assignedAdmin ? {
-          _id: inquiry.assignedAdmin._id,
-          name: inquiry.assignedAdmin.name,
-          email: inquiry.assignedAdmin.email,
-          role: inquiry.assignedAdmin.role
-        } : null,
+        assignedAdmin: inquiry.assignedAdmin
+          ? {
+              _id: inquiry.assignedAdmin._id,
+              name: inquiry.assignedAdmin.name,
+              email: inquiry.assignedAdmin.email,
+              role: inquiry.assignedAdmin.role,
+            }
+          : null,
         assignedAt: inquiry.assignedAt,
         createdAt: inquiry.createdAt,
-        updatedAt: inquiry.updatedAt
+        updatedAt: inquiry.updatedAt,
       })),
     },
   });
