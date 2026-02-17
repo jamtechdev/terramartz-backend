@@ -1,0 +1,15 @@
+{
+    "keep": {
+        "days": true,
+        "amount": 14
+    },
+    "auditLog": "D:\\Yash Raj Anand\\Terramartz\\terramartz-backend\\logs\\admin\\.1f1e3e57d8194688d4d5e27f3a80624853b90d0a-audit.json",
+    "files": [
+        {
+            "date": 1771307701376,
+            "name": "D:\\Yash Raj Anand\\Terramartz\\terramartz-backend\\logs\\admin\\admin-2026-02-17.log",
+            "hash": "57f74c59f6f775704dce97b58e0129a0ac8cfecc54a638a78b3a8f97477f3978"
+        }
+    ],
+    "hashType": "sha256"
+}
