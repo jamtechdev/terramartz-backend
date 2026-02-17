@@ -42,7 +42,7 @@ const adminLogger = winston.createLogger({
       datePattern: "YYYY-MM-DD",
       maxFiles: "14d",
     }),
-    new winston.transports.Console(),
+    // new winston.transports.Console(),
   ],
 });
 
