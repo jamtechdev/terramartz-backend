@@ -2,6 +2,7 @@ import AppError from "../../../utils/apperror.js";
 import catchAsync from "../../../utils/catchasync.js";
 import jwt from "jsonwebtoken";
 import { Admin } from "../../../models/super-admin/admin.js";
+import { adminLogger } from "../../../utils/logger.js";
 
 /**
  * @desc Middleware to protect admin routes with role-based access control (RBAC)
@@ -112,3 +113,42 @@ export const protectAdmin = (module = null, requiredAccess = null) => {
 
 // how to use this
 // router.get('/orders', protectAdmin('Orders', 'View'), getOrders);
+
+export const adminAuditLogger = (req, res, next) => {
+  const start = Date.now();
+
+  const maskSensitive = (obj) => {
+    const copy = JSON.parse(JSON.stringify(obj || {}));
+    const keysToMask = ["password", "token", "secret", "otp"];
+    keysToMask.forEach((k) => {
+      if (copy && Object.prototype.hasOwnProperty.call(copy, k)) {
+        copy[k] = "[REDACTED]";
+      }
+    });
+    return copy;
+  };
+
+  res.on("finish", () => {
+    const entry = {
+      time: new Date().toISOString(),
+      method: req.method,
+      url: req.originalUrl,
+      status: res.statusCode,
+      durationMs: Date.now() - start,
+      ip: req.ip,
+      adminId: req.user?._id || null,
+      adminEmail: (req.user && req.user.email) || req.body?.email || null,
+      body: maskSensitive(req.body),
+      query: req.query || {},
+      params: req.params || {},
+      userAgent: req.headers["user-agent"] || "",
+    };
+    try {
+      adminLogger.info(JSON.stringify(entry));
+    } catch (e) {
+      // swallow logging errors
+    }
+  });
+
+  next();
+};

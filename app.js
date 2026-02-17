@@ -51,12 +51,14 @@ import sellerProductRoutes from "./routes/seller/productsRoutes.js";
 import adminPlatformFeeRoute from "./routes/super-admin/platformFeeRoute.js";
 import adminDashboardRoute from "./routes/super-admin/adminDashboardRoute.js";
 import sellerDeliveryPartnersRoute from "./routes/sellers/deliveryPartnersRoute.js";
+import { adminAuditLogger } from "./controllers/common/admin/authController.js";
 
 // Blog Management Routes
 import adminBlogCategoryRoutes from "./routes/admin/blogCategoryRoutes.js";
 import adminBlogRoutes from "./routes/admin/blogRoutes.js";
 import adminMediaRoutes from "./routes/admin/mediaRoutes.js";
 import adminSettlementRoutes from "./routes/admin/adminSettlementRoutes.js";
+import adminLogsRoutes from "./routes/admin/adminLogsRoutes.js";
 import blogPublicRoutes from "./routes/common/blogPublicRoutes.js";
 
 // =====================
@@ -164,6 +166,7 @@ app.use("/api/terramartz/sellers", sellerStoreDetailRoutes);
 app.use("/api/stats", platformStatsRoutes);
 
 //admin routes
+app.use("/api/admin", adminAuditLogger);
 app.use("/api/admin/auth", adminAuthRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/admin/categories", adminCategoriesRoutes);
@@ -175,6 +178,7 @@ app.use("/api/seller/promo-code", sellerPromoCodeRoute);
 app.use("/api/seller/products", sellerProductRoutes);
 app.use("/api/admin/platform-fee", adminPlatformFeeRoute);
 app.use("/api/admin/dashboard", adminDashboardRoute);
+app.use("/api/admin/logs", adminLogsRoutes);
 
 // Blog Routes
 app.use("/api/admin/blog-categories", adminBlogCategoryRoutes);
