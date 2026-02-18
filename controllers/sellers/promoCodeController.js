@@ -192,6 +192,7 @@ export const validatePromoCode = catchAsync(async (req, res, next) => {
     const userUsageCount = await CustomerPromoCodeUse.countDocuments({
       user_id: userId,
       promoCodeId: promo._id,
+      purchase_id: { $ne: null }, // Only count usages tied to a real completed order
     });
     if (userUsageCount >= promo.perUserLimit) {
       return next(new AppError("You have already used this promo code", 400));
@@ -215,61 +216,92 @@ export const validatePromoCode = catchAsync(async (req, res, next) => {
 });
 
 // =================== APPLY PROMO CODE ===================
+// ⚠️ This endpoint is VALIDATE-ONLY — it does NOT record usage.
+// Usage (CustomerPromoCodeUse insert + usedCount increment) is recorded
+// exclusively after a successful Stripe payment in stripeController.js.
 export const applyPromoCode = catchAsync(async (req, res, next) => {
   // Only customers/users can apply promo codes
   if (!req.user || req.user.role !== "user") {
     return next(new AppError("Only customers can apply promo codes", 403));
   }
 
-  const { promoCodeId, userId, purchaseId } = req.body;
+  // Always use the authenticated user's ID — never trust userId from body
+  const authenticatedUserId = req.user._id.toString();
+  const { promoCodeId, sellerId, subtotal } = req.body;
 
-  // Verify the requesting user matches the userId in request body
-  if (userId !== req.user._id.toString()) {
+  if (!promoCodeId) {
+    return next(new AppError("Promo code ID is required", 400));
+  }
+
+  const promo = await PromoCode.findById(promoCodeId);
+  if (!promo) {
+    return next(new AppError("Promo code not found", 404));
+  }
+
+  // ✅ Seller-scope check: promo must belong to the seller of the cart products
+  if (sellerId && promo.sellerId && promo.sellerId.toString() !== sellerId.toString()) {
     return next(
-      new AppError("Unauthorized to apply promo code for another user", 403),
+      new AppError(
+        "This promo code is only valid for products from a specific seller and cannot be used here",
+        400,
+      ),
     );
   }
 
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const promo = await PromoCode.findById(promoCodeId).session(session);
-    if (!promo) throw new AppError("Promo code not found", 404);
-
-    // Record usage
-    await CustomerPromoCodeUse.create(
-      [
-        {
-          user_id: userId,
-          promoCodeId: promoCodeId,
-          purchase_id: purchaseId,
-        },
-      ],
-      { session },
-    );
-
-    // Update promo code usage count
-    await PromoCode.findByIdAndUpdate(
-      promoCodeId,
-      {
-        $inc: { usedCount: 1 },
-      },
-      { session },
-    );
-
-    await session.commitTransaction();
-    session.endSession();
-
-    res.status(200).json({
-      status: "success",
-      message: "Promo code applied successfully",
-    });
-  } catch (err) {
-    await session.abortTransaction();
-    session.endSession();
-    return next(err);
+  // ✅ Active check
+  if (!promo.isActive) {
+    return next(new AppError("This promo code is no longer active", 400));
   }
+
+  // ✅ Expiry check
+  if (promo.expiresAt && new Date(promo.expiresAt) < new Date()) {
+    return next(new AppError("This promo code has expired", 400));
+  }
+
+  // ✅ Total usage limit check
+  if (promo.usageLimit && promo.usedCount >= promo.usageLimit) {
+    return next(new AppError("This promo code has reached its usage limit", 400));
+  }
+
+  // ✅ Per-user limit check — only count COMPLETED purchases (purchase_id is set)
+  const userUsageCount = await CustomerPromoCodeUse.countDocuments({
+    user_id: authenticatedUserId,
+    promoCodeId: promo._id,
+    purchase_id: { $ne: null }, // Only count usages tied to a real completed order
+  });
+  if (userUsageCount >= (promo.perUserLimit || 1)) {
+    return next(new AppError("You have already used this promo code", 400));
+  }
+
+  // ✅ Minimum order amount check
+  if (subtotal !== undefined && promo.minOrderAmount && subtotal < promo.minOrderAmount) {
+    return next(
+      new AppError(`Minimum order amount is $${promo.minOrderAmount}`, 400),
+    );
+  }
+
+  // Calculate discount amount
+  let discount = 0;
+  if (promo.type === "fixed") {
+    discount = promo.discount;
+  } else if (promo.type === "percentage") {
+    discount = subtotal ? (subtotal * promo.discount) / 100 : promo.discount;
+  }
+
+  // ✅ No DB writes here — usage is recorded only after successful payment
+  res.status(200).json({
+    status: "success",
+    valid: true,
+    message: "Promo code is valid",
+    discount,
+    promoCode: {
+      _id: promo._id,
+      code: promo.code,
+      type: promo.type,
+      discount: promo.discount,
+      sellerId: promo.sellerId,
+    },
+  });
 });
 
 // =================== GET PROMO CODE USAGE ===================
