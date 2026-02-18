@@ -23,6 +23,11 @@ const cartSchema = new mongoose.Schema(
       default: 1,
       min: [1, "Quantity must be at least 1"],
     },
+    sellerId: {
+      type: String,
+      ref: "User",
+      index: true,
+    },
   },
   { timestamps: true }
 );
