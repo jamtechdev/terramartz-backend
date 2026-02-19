@@ -70,6 +70,14 @@ export const calculateOrderBreakdown = async (
     }
 
     const quantity = Number(item.quantity) || 1;
+
+    // ✅ Stock Validation
+    if (product.stockQuantity < quantity) {
+      throw new Error(
+        `Insufficient stock for "${product.title}". Only ${product.stockQuantity} available.`
+      );
+    }
+
     totalSavings += (originalPrice - basePrice) * quantity;
 
     productDetailsArr.push({

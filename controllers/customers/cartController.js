@@ -29,11 +29,33 @@ export const addToCart = catchAsync(async (req, res, next) => {
 
   if (cartItem) {
     // Product already in cart → update quantity
-    cartItem.quantity += quantity;
+    const totalQuantity = cartItem.quantity + quantity;
+
+    // Validate stock
+    if (totalQuantity > product.stockQuantity) {
+      return next(
+        new AppError(
+          `Insufficient stock. Only ${product.stockQuantity} items available. You already have ${cartItem.quantity} in your cart.`,
+          400
+        )
+      );
+    }
+
+    cartItem.quantity = totalQuantity;
     // Ensure sellerId is set even for old items
     if (!cartItem.sellerId) cartItem.sellerId = product.createdBy;
     await cartItem.save();
   } else {
+    // Validate stock for new item
+    if (quantity > product.stockQuantity) {
+      return next(
+        new AppError(
+          `Insufficient stock. Only ${product.stockQuantity} items available.`,
+          400
+        )
+      );
+    }
+
     // New cart item - use String format to match Cart model
     cartItem = await Cart.create({
       product: productId,
@@ -56,8 +78,19 @@ export const updateCartItem = catchAsync(async (req, res, next) => {
   const cartItem = await Cart.findOne({
     _id: req.params.id,
     user: req.user._id,
-  });
+  }).populate("product");
+
   if (!cartItem) return next(new AppError("Cart item not found", 404));
+
+  // Validate stock
+  if (quantity > cartItem.product.stockQuantity) {
+    return next(
+      new AppError(
+        `Insufficient stock. Only ${cartItem.product.stockQuantity} items available.`,
+        400
+      )
+    );
+  }
 
   cartItem.quantity = quantity;
   await cartItem.save();
