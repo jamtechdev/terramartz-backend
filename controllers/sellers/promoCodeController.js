@@ -160,15 +160,40 @@ export const validatePromoCode = catchAsync(async (req, res, next) => {
     return next(new AppError("Only customers can validate promo codes", 403));
   }
 
-  let { code, subtotal } = req.body;
+  let { code, subtotal, sellerId, products } = req.body;
 
-  code = code.trim();
+  code = code?.trim();
   const userId = req.user.id;
 
   if (!code) return next(new AppError("Promo code is required", 400));
 
+  // 1️⃣ Find promo code globally first to see if it even exists
   const promo = await PromoCode.findOne({ code, isActive: true });
   if (!promo) return next(new AppError("Invalid promo code", 400));
+
+  const promoSellerId = promo.sellerId?.toString();
+
+  // 2️⃣ Determine the authoritative sellerId from the cart/products
+  // If products array is provided, it's the most reliable source
+  if (products && Array.isArray(products) && products.length > 0) {
+    const { Product } = await import("../../models/seller/product.js");
+    const productDocs = await Product.find({ _id: { $in: products } });
+    if (productDocs.length > 0) {
+      // Use the first product's owner as the target seller for validation
+      sellerId = productDocs[0].createdBy?.toString() || productDocs[0].seller?.toString();
+    }
+  }
+
+  // 3️⃣ Seller-scope check: if promo is restricted to a seller, it MUST match the cart seller
+
+  if (promoSellerId && sellerId && promoSellerId !== sellerId.toString()) {
+    return next(
+      new AppError(
+        "This promo code is only valid for products from a specific seller",
+        400,
+      ),
+    );
+  }
 
   // Check expiry
   if (promo.expiresAt && new Date(promo.expiresAt) < new Date()) {
@@ -233,13 +258,16 @@ export const applyPromoCode = catchAsync(async (req, res, next) => {
     return next(new AppError("Promo code ID is required", 400));
   }
 
+  // 💡 Verification: Finding promo by ID and ensuring it belongs to the seller (if provided)
   const promo = await PromoCode.findById(promoCodeId);
   if (!promo) {
     return next(new AppError("Promo code not found", 404));
   }
 
   // ✅ Seller-scope check: promo must belong to the seller of the cart products
-  if (sellerId && promo.sellerId && promo.sellerId.toString() !== sellerId.toString()) {
+  const promoSellerId = promo.sellerId?.toString();
+
+  if (sellerId && promoSellerId && promoSellerId !== sellerId.toString()) {
     return next(
       new AppError(
         "This promo code is only valid for products from a specific seller and cannot be used here",

@@ -120,33 +120,23 @@ export const calculateOrderBreakdown = async (
       // Use String conversion for reliable comparison
       const promoSellerIdStr = matchedPromo.sellerId.toString();
 
-      console.log(
-        `🔍 [calculateOrderBreakdown] Checking products for promo owner: ${promoSellerIdStr}`,
-      );
+      console.log(`🔍 [calculateOrderBreakdown] Checking products for promo owner: ${promoSellerIdStr}`);
 
       const allProductsFromPromoSeller = productDetailsArr.every((p, idx) => {
-        const prodSellerId =
-          p.product.createdBy?.toString() || p.product.seller?.toString();
+        const prodSellerId = p.product.createdBy?.toString() || p.product.seller?.toString();
         const matches = prodSellerId === promoSellerIdStr;
-        console.log(
-          `   - Product [${idx}] ID: ${p.product._id}, createdBy: ${prodSellerId}, Matches: ${matches}`,
-        );
+        console.log(`   - Product [${idx}] ID: ${p.product._id}, createdBy: ${prodSellerId}, Matches: ${matches}`);
         return matches;
       });
 
       if (!allProductsFromPromoSeller) {
         // If products are from different sellers, this specific seller coupon cannot be applied
-        console.log(
-          `🚫 Promo code ${promoCode} rejected: Not all products belong to seller ${promoSellerIdStr}`,
-        );
+        console.log(`🚫 Promo code ${promoCode} rejected: Not all products belong to seller ${promoSellerIdStr}`);
       } else {
         const now = new Date();
-        const notExpired =
-          !matchedPromo.expiresAt || new Date(matchedPromo.expiresAt) >= now;
+        const notExpired = !matchedPromo.expiresAt || new Date(matchedPromo.expiresAt) >= now;
         const meetsMinAmount = subtotal >= (matchedPromo.minOrderAmount || 0);
-        const withinUsageLimit =
-          !matchedPromo.usageLimit ||
-          matchedPromo.usedCount < matchedPromo.usageLimit;
+        const withinUsageLimit = !matchedPromo.usageLimit || matchedPromo.usedCount < matchedPromo.usageLimit;
 
         let withinUserLimit = true;
         if (user && user.id) {
@@ -158,16 +148,10 @@ export const calculateOrderBreakdown = async (
           withinUserLimit = userUsageCount < (matchedPromo.perUserLimit || 1);
         }
 
-        if (
-          notExpired &&
-          meetsMinAmount &&
-          withinUsageLimit &&
-          withinUserLimit
-        ) {
-          promoDiscount =
-            matchedPromo.type === "fixed"
-              ? matchedPromo.discount
-              : (subtotal * matchedPromo.discount) / 100;
+        if (notExpired && meetsMinAmount && withinUsageLimit && withinUserLimit) {
+          promoDiscount = matchedPromo.type === "fixed"
+            ? matchedPromo.discount
+            : (subtotal * matchedPromo.discount) / 100;
           promoCodeId = matchedPromo._id;
         }
       }
@@ -722,6 +706,7 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
     } = breakdown;
 
     const seller = await User.findById(sellerId);
+    const lineItems = [];
 
     // 💡 Step 2: Build line items from breakdown data
     for (const pData of productDetailsArr) {
