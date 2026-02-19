@@ -59,6 +59,7 @@ import adminBlogRoutes from "./routes/admin/blogRoutes.js";
 import adminMediaRoutes from "./routes/admin/mediaRoutes.js";
 import adminSettlementRoutes from "./routes/admin/adminSettlementRoutes.js";
 import adminLogsRoutes from "./routes/admin/adminLogsRoutes.js";
+import adminSellerOrdersRoutes from "./routes/admin/adminSellerOrdersRoutes.js";
 import blogPublicRoutes from "./routes/common/blogPublicRoutes.js";
 
 // =====================
@@ -179,6 +180,7 @@ app.use("/api/seller/products", sellerProductRoutes);
 app.use("/api/admin/platform-fee", adminPlatformFeeRoute);
 app.use("/api/admin/dashboard", adminDashboardRoute);
 app.use("/api/admin/logs", adminLogsRoutes);
+app.use("/api/admin/seller-orders", adminSellerOrdersRoutes);
 
 // Blog Routes
 app.use("/api/admin/blog-categories", adminBlogCategoryRoutes);
