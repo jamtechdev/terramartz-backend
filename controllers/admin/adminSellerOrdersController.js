@@ -136,46 +136,66 @@ export const getSellerOrders = catchAsync(async (req, res, next) => {
                 from: "users",
                 localField: "buyer",
                 foreignField: "_id",
-                as: "buyer",
+                as: "buyerData",
             },
         },
-        { $unwind: "$buyer" },
+        { $unwind: "$buyerData" },
         { $match: match },
         { $sort: { createdAt: -1 } },
         { $skip: skip },
         { $limit: limitNum },
+        // Unwind products to join with product details
+        { $unwind: "$products" },
+        // Filter products for this seller again (after match on top level)
+        { $match: { "products.seller": sellerId } },
         {
-            $project: {
-                _id: 1,
-                orderId: 1,
+            $lookup: {
+                from: "products",
+                localField: "products.product",
+                foreignField: "_id",
+                as: "productInfo",
+            },
+        },
+        { $unwind: { path: "$productInfo", preserveNullAndEmptyArrays: true } },
+        // Group back to reconstruct the order
+        {
+            $group: {
+                _id: "$_id",
+                orderId: { $first: "$orderId" },
+                createdAt: { $first: "$createdAt" },
+                status: { $first: "$status" },
+                paymentStatus: { $first: "$paymentStatus" },
+                totalAmount: { $first: "$totalAmount" },
+                shippingAddress: { $first: "$shippingAddress" },
                 buyerName: {
-                    $trim: {
-                        input: {
-                            $concat: [
-                                "$buyer.firstName",
-                                " ",
-                                { $ifNull: ["$buyer.middleName", ""] },
-                                " ",
-                                "$buyer.lastName",
-                            ],
+                    $first: {
+                        $trim: {
+                            input: {
+                                $concat: [
+                                    "$buyerData.firstName",
+                                    " ",
+                                    { $ifNull: ["$buyerData.middleName", ""] },
+                                    " ",
+                                    "$buyerData.lastName",
+                                ],
+                            },
                         },
                     },
                 },
-                buyerEmail: "$buyer.email",
-                totalAmount: 1,
-                status: 1,
-                paymentStatus: 1,
-                createdAt: 1,
-                // Filter products to only show ones belonging to this seller
+                buyerEmail: { $first: "$buyerData.email" },
+                buyerPhone: { $first: "$buyerData.phoneNumber" },
                 products: {
-                    $filter: {
-                        input: "$products",
-                        as: "item",
-                        cond: { $eq: ["$$item.seller", sellerId] }
+                    $push: {
+                        productId: "$products.product",
+                        quantity: "$products.quantity",
+                        price: "$products.price",
+                        title: { $ifNull: ["$productInfo.title", "Unknown Product"] },
+                        image: { $arrayElemAt: [{ $ifNull: ["$productInfo.productImages", []] }, 0] },
                     }
                 }
-            },
+            }
         },
+        { $sort: { createdAt: -1 } }
     ];
 
     const orders = await Purchase.aggregate(pipeline);
