@@ -31,8 +31,14 @@ function generateUniqueOrderId() {
  * @param {string} promoCode - Applied promo code string
  * @param {Object} user - Authenticated user object
  */
-export const calculateOrderBreakdown = async (products, shippingMethod, promoCode, user) => {
-  if (!products || products.length === 0) throw new Error("No products provided");
+export const calculateOrderBreakdown = async (
+  products,
+  shippingMethod,
+  promoCode,
+  user,
+) => {
+  if (!products || products.length === 0)
+    throw new Error("No products provided");
 
   let sellerId = null;
   const productDetailsArr = [];
@@ -51,7 +57,8 @@ export const calculateOrderBreakdown = async (products, shippingMethod, promoCod
     // Apply product-level discount if applicable
     if (
       product.discount &&
-      (!product.discountExpires || new Date(product.discountExpires) >= new Date())
+      (!product.discountExpires ||
+        new Date(product.discountExpires) >= new Date())
     ) {
       if (product.discountType === "fixed") basePrice -= product.discount;
       else if (product.discountType === "percentage")
@@ -69,7 +76,10 @@ export const calculateOrderBreakdown = async (products, shippingMethod, promoCod
     });
   }
 
-  const subtotal = productDetailsArr.reduce((sum, p) => sum + p.basePrice * p.quantity, 0);
+  const subtotal = productDetailsArr.reduce(
+    (sum, p) => sum + p.basePrice * p.quantity,
+    0,
+  );
 
   const seller = await User.findById(sellerId);
   if (!seller) throw new Error("Seller not found");
@@ -84,7 +94,10 @@ export const calculateOrderBreakdown = async (products, shippingMethod, promoCod
     // Standard shipping
     if (subtotal > 50) {
       shippingCost = 0;
-    } else if (seller.sellerProfile.freeShippingThreshold && subtotal >= seller.sellerProfile.freeShippingThreshold) {
+    } else if (
+      seller.sellerProfile.freeShippingThreshold &&
+      subtotal >= seller.sellerProfile.freeShippingThreshold
+    ) {
       shippingCost = 0;
     } else {
       shippingCost = seller.sellerProfile.shippingCharges || 5.99;
@@ -96,39 +109,75 @@ export const calculateOrderBreakdown = async (products, shippingMethod, promoCod
   let promoCodeId = null;
 
   if (promoCode) {
+    // 💡 Search for the promo code globally first to identify its owner
     const matchedPromo = await PromoCode.findOne({
-      code: promoCode,
-      sellerId: sellerId,
+      code: promoCode.trim(),
       isActive: true,
     });
 
     if (matchedPromo) {
-      const now = new Date();
-      const notExpired = !matchedPromo.expiresAt || new Date(matchedPromo.expiresAt) >= now;
-      const meetsMinAmount = subtotal >= (matchedPromo.minOrderAmount || 0);
-      const withinUsageLimit = !matchedPromo.usageLimit || matchedPromo.usedCount < matchedPromo.usageLimit;
+      // ✅ Check if ALL products in the cart belong to this promo code's seller
+      // Use String conversion for reliable comparison
+      const promoSellerIdStr = matchedPromo.sellerId.toString();
 
-      let withinUserLimit = true;
-      if (user && user.id) {
-        const userUsageCount = await CustomerPromoCodeUse.countDocuments({
-          user_id: user.id,
-          promoCodeId: matchedPromo._id,
-          purchase_id: { $ne: null },
-        });
-        withinUserLimit = userUsageCount < (matchedPromo.perUserLimit || 1);
-      }
+      console.log(
+        `🔍 [calculateOrderBreakdown] Checking products for promo owner: ${promoSellerIdStr}`,
+      );
 
-      if (notExpired && meetsMinAmount && withinUsageLimit && withinUserLimit) {
-        promoDiscount = matchedPromo.type === "fixed"
-          ? matchedPromo.discount
-          : (subtotal * matchedPromo.discount) / 100;
-        promoCodeId = matchedPromo._id;
+      const allProductsFromPromoSeller = productDetailsArr.every((p, idx) => {
+        const prodSellerId =
+          p.product.createdBy?.toString() || p.product.seller?.toString();
+        const matches = prodSellerId === promoSellerIdStr;
+        console.log(
+          `   - Product [${idx}] ID: ${p.product._id}, createdBy: ${prodSellerId}, Matches: ${matches}`,
+        );
+        return matches;
+      });
+
+      if (!allProductsFromPromoSeller) {
+        // If products are from different sellers, this specific seller coupon cannot be applied
+        console.log(
+          `🚫 Promo code ${promoCode} rejected: Not all products belong to seller ${promoSellerIdStr}`,
+        );
+      } else {
+        const now = new Date();
+        const notExpired =
+          !matchedPromo.expiresAt || new Date(matchedPromo.expiresAt) >= now;
+        const meetsMinAmount = subtotal >= (matchedPromo.minOrderAmount || 0);
+        const withinUsageLimit =
+          !matchedPromo.usageLimit ||
+          matchedPromo.usedCount < matchedPromo.usageLimit;
+
+        let withinUserLimit = true;
+        if (user && user.id) {
+          const userUsageCount = await CustomerPromoCodeUse.countDocuments({
+            user_id: user.id,
+            promoCodeId: matchedPromo._id,
+            purchase_id: { $ne: null },
+          });
+          withinUserLimit = userUsageCount < (matchedPromo.perUserLimit || 1);
+        }
+
+        if (
+          notExpired &&
+          meetsMinAmount &&
+          withinUsageLimit &&
+          withinUserLimit
+        ) {
+          promoDiscount =
+            matchedPromo.type === "fixed"
+              ? matchedPromo.discount
+              : (subtotal * matchedPromo.discount) / 100;
+          promoCodeId = matchedPromo._id;
+        }
       }
     }
   }
 
   // 4. Admin Discount (Limited Time Offer)
-  const activeTax = await TaxConfig.findOne({ isActive: true }) || await TaxConfig.findOne({ active: true });
+  const activeTax =
+    (await TaxConfig.findOne({ isActive: true })) ||
+    (await TaxConfig.findOne({ active: true }));
   let adminDiscount = 0;
   if (activeTax && activeTax.limitedTimeOffer?.active) {
     const offer = activeTax.limitedTimeOffer;
@@ -162,12 +211,15 @@ export const calculateOrderBreakdown = async (products, shippingMethod, promoCod
   const taxAmount = Math.round(totalAfterDiscount * taxRate * 100) / 100;
 
   // 7. Total Amount
-  const totalAmount = Math.round((totalAfterDiscount + shippingCost + taxAmount) * 100) / 100;
+  const totalAmount =
+    Math.round((totalAfterDiscount + shippingCost + taxAmount) * 100) / 100;
 
   // 8. Platform Fee
   const platformFeeConfig = await PlatformFee.findOne();
   let platformFeeAmount = 0;
-  const hasStripeConnect = seller.sellerProfile?.stripeAccountId && seller.sellerProfile?.stripeAccountStatus === "active";
+  const hasStripeConnect =
+    seller.sellerProfile?.stripeAccountId &&
+    seller.sellerProfile?.stripeAccountStatus === "active";
 
   if (platformFeeConfig) {
     if (platformFeeConfig.type === "fixed") {
@@ -193,7 +245,7 @@ export const calculateOrderBreakdown = async (products, shippingMethod, promoCod
     productDetailsArr,
     hasStripeConnect,
     platformFeeConfig,
-    activeTax
+    activeTax,
   };
 };
 
@@ -206,12 +258,12 @@ export const getCheckoutBreakdown = catchAsync(async (req, res, next) => {
       products,
       shippingMethod,
       promoCode,
-      req.user
+      req.user,
     );
 
     res.status(200).json({
       status: "success",
-      data: breakdown
+      data: breakdown,
     });
   } catch (error) {
     return next(new AppError(error.message, 400));
@@ -220,7 +272,8 @@ export const getCheckoutBreakdown = catchAsync(async (req, res, next) => {
 
 // ✅ Create PaymentIntent
 export const createPaymentIntent = catchAsync(async (req, res, next) => {
-  const { products, shippingAddress, promoCode, skipWebhook, shippingMethod } = req.body;
+  const { products, shippingAddress, promoCode, skipWebhook, shippingMethod } =
+    req.body;
 
   if (!products || products.length === 0)
     return next(new AppError("No products provided", 400));
@@ -232,7 +285,7 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
       products,
       shippingMethod,
       promoCode,
-      req.user
+      req.user,
     );
 
     const {
@@ -247,7 +300,7 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
       sellerId,
       productDetailsArr,
       hasStripeConnect,
-      platformFeeConfig
+      platformFeeConfig,
     } = breakdown;
 
     // ✅ Step 11: Create Stripe PaymentIntent
@@ -293,7 +346,8 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
     }
     */
 
-    const paymentIntent = await stripe.paymentIntents.create(paymentIntentConfig);
+    const paymentIntent =
+      await stripe.paymentIntents.create(paymentIntentConfig);
 
     // 🔹 Local Development: Skip webhook and directly create purchase
     const isDevelopment = process.env.NODE_ENV === "development";
@@ -359,14 +413,14 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
 
 // ✅ Webhook + retry logic + atomic stock update
 export const webhookPayment = async (req, res, next) => {
-  // 🔹 Skip webhook in development mode (local testing)
-  if (process.env.NODE_ENV === "development") {
-    console.log("⚠️ Webhook skipped in development mode");
-    return res.status(200).json({
-      received: true,
-      message: "Webhook skipped in development mode",
-    });
-  }
+  // // 🔹 Skip webhook in development mode (local testing)
+  // if (process.env.NODE_ENV === "development") {
+  //   console.log("⚠️ Webhook skipped in development mode");
+  //   return res.status(200).json({
+  //     received: true,
+  //     message: "Webhook skipped in development mode",
+  //   });
+  // }
 
   const signature = req.headers["stripe-signature"];
   let event;
@@ -642,13 +696,13 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
     );
   });
   console.log(`=============================================\n`);
-
+  const lineItems = [];
   try {
     const breakdown = await calculateOrderBreakdown(
       products,
       shippingMethod,
       promoCode,
-      req.user
+      req.user,
     );
 
     const {
@@ -664,7 +718,7 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
       productDetailsArr,
       hasStripeConnect,
       platformFeeConfig,
-      activeTax
+      activeTax,
     } = breakdown;
 
     const seller = await User.findById(sellerId);
@@ -673,7 +727,8 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
     for (const pData of productDetailsArr) {
       const { product, basePrice, quantity, finalPricePerUnit } = pData;
 
-      const productName = product.name?.trim().substring(0, 500) || `Product ${product._id}`;
+      const productName =
+        product.name?.trim().substring(0, 500) || `Product ${product._id}`;
 
       let productDescription = null;
       if (product.description && typeof product.description === "string") {
@@ -687,7 +742,10 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
           product_data: {
             name: productName,
             ...(productDescription ? { description: productDescription } : {}),
-            images: product.productImages?.length > 0 ? [String(product.productImages[0])] : [],
+            images:
+              product.productImages?.length > 0
+                ? [String(product.productImages[0])]
+                : [],
           },
           unit_amount: Math.round(finalPricePerUnit * 100),
         },
@@ -723,16 +781,16 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
       });
     }
 
-    // Add admin discount as a negative line item if applicable (Stripe doesn't like negative prices, 
+    // Add admin discount as a negative line item if applicable (Stripe doesn't like negative prices,
     // but the helper already distributed discounts into finalPricePerUnit of products.
     // Wait, if there's an admin discount NOT included in promoDiscount, it's also distributed.
     // So products already reflect the TOTAL discount.
 
     // 💡 Step 5: Create metadata for order creation
-    const productsMetadata = productDetailsArr.map(p => ({
+    const productsMetadata = productDetailsArr.map((p) => ({
       product: String(p.product._id),
       quantity: p.quantity,
-      price: p.finalPricePerUnit
+      price: p.finalPricePerUnit,
     }));
 
     const userId = String(req.user._id || req.user.id);
@@ -1367,11 +1425,30 @@ const createPurchaseFromPaymentIntent = async (paymentIntent) => {
   let success = false;
 
   while (!success && attempt < 3) {
-    const session = await mongoose.startSession();
+    let session = await mongoose.startSession();
     session.startTransaction();
 
     try {
-      const metadata = paymentIntent.metadata || {};
+      let metadata = paymentIntent.metadata || {};
+      if (!metadata.buyer) {
+        console.log(
+          "⚠️ No metadata on payment intent, fetching checkout session...",
+        );
+
+        const sessions = await stripe.checkout.sessions.list({
+          payment_intent: paymentIntent.id,
+          limit: 1,
+        });
+
+        if (!sessions.data.length) {
+          throw new Error(
+            "No checkout session found for payment intent: " + paymentIntent.id,
+          );
+        }
+
+        metadata = sessions.data[0].metadata || {};
+        console.log("✅ Metadata fetched from checkout session:", metadata);
+      }
       const buyer = metadata.buyer;
       const products = metadata.products ? JSON.parse(metadata.products) : [];
       const shippingAddress = metadata.shippingAddress
