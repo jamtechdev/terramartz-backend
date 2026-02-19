@@ -40,16 +40,19 @@ export const calculateOrderBreakdown = async (
   if (!products || products.length === 0)
     throw new Error("No products provided");
 
-  let sellerId = null;
   const productDetailsArr = [];
   let totalSavings = 0;
 
   // 1. Fetch products and calculate subtotal (using DB prices)
+  // Track all unique seller IDs for multi-seller settlement
+  const sellerIdsSet = new Set();
+
   for (const item of products) {
     const product = await Product.findById(item.product);
     if (!product) throw new Error(`Product not found: ${item.product}`);
 
-    if (!sellerId) sellerId = product.createdBy;
+    const productSellerId = String(product.createdBy);
+    sellerIdsSet.add(productSellerId);
 
     let basePrice = Number(product.price);
     const originalPrice = Number(product.originalPrice || product.price);
@@ -73,8 +76,13 @@ export const calculateOrderBreakdown = async (
       product,
       basePrice,
       quantity,
+      sellerId: productSellerId,
     });
   }
+
+  const sellerIds = [...sellerIdsSet];
+  // Use first seller for shipping config (backward compatible)
+  const sellerId = sellerIds[0];
 
   const subtotal = productDetailsArr.reduce(
     (sum, p) => sum + p.basePrice * p.quantity,
@@ -120,23 +128,33 @@ export const calculateOrderBreakdown = async (
       // Use String conversion for reliable comparison
       const promoSellerIdStr = matchedPromo.sellerId.toString();
 
-      console.log(`🔍 [calculateOrderBreakdown] Checking products for promo owner: ${promoSellerIdStr}`);
+      console.log(
+        `🔍 [calculateOrderBreakdown] Checking products for promo owner: ${promoSellerIdStr}`,
+      );
 
       const allProductsFromPromoSeller = productDetailsArr.every((p, idx) => {
-        const prodSellerId = p.product.createdBy?.toString() || p.product.seller?.toString();
+        const prodSellerId =
+          p.product.createdBy?.toString() || p.product.seller?.toString();
         const matches = prodSellerId === promoSellerIdStr;
-        console.log(`   - Product [${idx}] ID: ${p.product._id}, createdBy: ${prodSellerId}, Matches: ${matches}`);
+        console.log(
+          `   - Product [${idx}] ID: ${p.product._id}, createdBy: ${prodSellerId}, Matches: ${matches}`,
+        );
         return matches;
       });
 
       if (!allProductsFromPromoSeller) {
         // If products are from different sellers, this specific seller coupon cannot be applied
-        console.log(`🚫 Promo code ${promoCode} rejected: Not all products belong to seller ${promoSellerIdStr}`);
+        console.log(
+          `🚫 Promo code ${promoCode} rejected: Not all products belong to seller ${promoSellerIdStr}`,
+        );
       } else {
         const now = new Date();
-        const notExpired = !matchedPromo.expiresAt || new Date(matchedPromo.expiresAt) >= now;
+        const notExpired =
+          !matchedPromo.expiresAt || new Date(matchedPromo.expiresAt) >= now;
         const meetsMinAmount = subtotal >= (matchedPromo.minOrderAmount || 0);
-        const withinUsageLimit = !matchedPromo.usageLimit || matchedPromo.usedCount < matchedPromo.usageLimit;
+        const withinUsageLimit =
+          !matchedPromo.usageLimit ||
+          matchedPromo.usedCount < matchedPromo.usageLimit;
 
         let withinUserLimit = true;
         if (user && user.id) {
@@ -148,10 +166,16 @@ export const calculateOrderBreakdown = async (
           withinUserLimit = userUsageCount < (matchedPromo.perUserLimit || 1);
         }
 
-        if (notExpired && meetsMinAmount && withinUsageLimit && withinUserLimit) {
-          promoDiscount = matchedPromo.type === "fixed"
-            ? matchedPromo.discount
-            : (subtotal * matchedPromo.discount) / 100;
+        if (
+          notExpired &&
+          meetsMinAmount &&
+          withinUsageLimit &&
+          withinUserLimit
+        ) {
+          promoDiscount =
+            matchedPromo.type === "fixed"
+              ? matchedPromo.discount
+              : (subtotal * matchedPromo.discount) / 100;
           promoCodeId = matchedPromo._id;
         }
       }
@@ -214,6 +238,28 @@ export const calculateOrderBreakdown = async (
     platformFeeAmount = Math.round(platformFeeAmount * 100) / 100;
   }
 
+  // 9. Compute per-seller breakdown for settlements
+  const sellerBreakdowns = {};
+  for (const sId of sellerIds) {
+    const sellerProducts = productDetailsArr.filter((p) => p.sellerId === sId);
+    const sellerSubtotal = sellerProducts.reduce(
+      (sum, p) => sum + p.basePrice * p.quantity,
+      0,
+    );
+    const proportion = subtotal > 0 ? sellerSubtotal / subtotal : 0;
+    const sellerPlatformFee =
+      Math.round(platformFeeAmount * proportion * 100) / 100;
+    const sellerCommission =
+      Math.round((sellerSubtotal - sellerPlatformFee) * 100) / 100;
+
+    sellerBreakdowns[sId] = {
+      sellerId: sId,
+      subtotal: Math.round(sellerSubtotal * 100) / 100,
+      platformFee: sellerPlatformFee,
+      commission: sellerCommission,
+    };
+  }
+
   return {
     subtotal: Math.round(subtotal * 100) / 100,
     promoDiscount: Math.round(promoDiscount * 100) / 100,
@@ -226,6 +272,8 @@ export const calculateOrderBreakdown = async (
     sellerReceives: Math.round((totalAmount - platformFeeAmount) * 100) / 100,
     promoCodeId,
     sellerId,
+    sellerIds, // all unique seller IDs for multi-seller orders
+    sellerBreakdowns, // per-seller breakdown for settlements
     productDetailsArr,
     hasStripeConnect,
     platformFeeConfig,
@@ -282,6 +330,7 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
       platformFeeAmount,
       promoCodeId,
       sellerId,
+      sellerIds,
       productDetailsArr,
       hasStripeConnect,
       platformFeeConfig,
@@ -294,6 +343,7 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
       metadata: {
         buyer: req.user.id,
         sellerId: String(sellerId),
+        sellerIds: JSON.stringify(sellerIds),
         products: JSON.stringify(
           productDetailsArr.map((p) => ({
             product: String(p.product._id),
@@ -544,29 +594,55 @@ export const webhookPayment = async (req, res, next) => {
         ],
       });
 
-      // ✅ Create SellerSettlement record
-      const commissionAmount = totalAmount - platformFeeAmount;
-
+      // ✅ Create SellerSettlement records for ALL sellers in this order
       const orderDate = new Date();
       const maturityDate = new Date(orderDate);
       maturityDate.setDate(maturityDate.getDate() + 3); // 3 Days Buffer
       const scheduledSettlementDate = calculateSettlementDate(maturityDate);
 
-      // Get seller from first product
-      const sellerId = purchaseProducts[0]?.seller;
+      // Group products by seller to create per-seller settlement records
+      const sellerProductsMap = {};
+      for (const pp of purchaseProducts) {
+        const sId = String(pp.seller);
+        if (!sellerProductsMap[sId]) sellerProductsMap[sId] = [];
+        sellerProductsMap[sId].push(pp);
+      }
 
-      if (sellerId) {
+      const orderSubtotal = purchaseProducts.reduce(
+        (sum, pp) => sum + pp.price * pp.quantity,
+        0,
+      );
+
+      for (const sId of Object.keys(sellerProductsMap)) {
+        const sellerItems = sellerProductsMap[sId];
+        const sellerSubtotal = sellerItems.reduce(
+          (sum, pp) => sum + pp.price * pp.quantity,
+          0,
+        );
+        // Proportional platform fee based on seller's share of the order
+        const proportion =
+          orderSubtotal > 0 ? sellerSubtotal / orderSubtotal : 0;
+        const sellerPlatformFee =
+          Math.round(platformFeeAmount * proportion * 100) / 100;
+        const sellerCommission =
+          Math.round((sellerSubtotal - sellerPlatformFee) * 100) / 100;
+
         await SellerSettlement.create({
-          sellerId,
+          sellerId: sId,
           purchaseId: purchase._id,
-          totalOrderAmount: totalAmount,
-          commissionAmount: commissionAmount,
-          platformFee: platformFeeAmount,
+          products: sellerItems.map((pp) => ({
+            product: String(pp.product),
+            quantity: pp.quantity,
+            price: pp.price,
+          })),
+          totalOrderAmount: sellerSubtotal,
+          commissionAmount: sellerCommission,
+          platformFee: sellerPlatformFee,
           status: "pending",
           scheduledSettlementDate,
         });
         console.log(
-          `✅ SellerSettlement created for seller ${sellerId}, scheduled for ${scheduledSettlementDate}`,
+          `✅ SellerSettlement created for seller ${sId} ($${sellerCommission}), scheduled for ${scheduledSettlementDate}`,
         );
       }
 
@@ -699,6 +775,7 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
       platformFeeAmount,
       promoCodeId,
       sellerId,
+      sellerIds,
       productDetailsArr,
       hasStripeConnect,
       platformFeeConfig,
@@ -789,6 +866,7 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
       taxAmount: taxAmount.toString(),
       platformFeeAmount: platformFeeAmount.toString(),
       platformFeeType: platformFeeConfig?.type || "none",
+      sellerIds: JSON.stringify(sellerIds),
       promoCodeId: promoCodeId || null,
     };
 
@@ -1254,6 +1332,63 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
     );
   }
 
+  // ✅ Create SellerSettlement records for ALL sellers in this order
+  try {
+    const orderDate = new Date();
+    const maturityDate = new Date(orderDate);
+    maturityDate.setDate(maturityDate.getDate() + 3); // 3 Days Buffer
+    const scheduledSettlementDate = calculateSettlementDate(maturityDate);
+
+    // Group products by seller to create per-seller settlement records
+    const sellerProductsMap = {};
+    for (const pp of purchaseProducts) {
+      const sId = String(pp.seller);
+      if (!sellerProductsMap[sId]) sellerProductsMap[sId] = [];
+      sellerProductsMap[sId].push(pp);
+    }
+
+    const orderSubtotal = purchaseProducts.reduce(
+      (sum, pp) => sum + pp.price * pp.quantity,
+      0,
+    );
+
+    for (const sId of Object.keys(sellerProductsMap)) {
+      const sellerItems = sellerProductsMap[sId];
+      const sellerSubtotal = sellerItems.reduce(
+        (sum, pp) => sum + pp.price * pp.quantity,
+        0,
+      );
+      // Proportional platform fee based on seller's share of the order
+      const proportion =
+        orderSubtotal > 0 ? sellerSubtotal / orderSubtotal : 0;
+      const sellerPlatformFee =
+        Math.round(platformFeeAmount * proportion * 100) / 100;
+      const sellerCommission =
+        Math.round((sellerSubtotal - sellerPlatformFee) * 100) / 100;
+
+      await SellerSettlement.create({
+        sellerId: sId,
+        purchaseId: order._id,
+        products: sellerItems.map((pp) => ({
+          product: String(pp.product),
+          quantity: pp.quantity,
+          price: pp.price,
+        })),
+        totalOrderAmount: sellerSubtotal,
+        commissionAmount: sellerCommission,
+        platformFee: sellerPlatformFee,
+        status: "pending",
+        scheduledSettlementDate,
+      });
+      console.log(
+        `✅ SellerSettlement created for seller ${sId} ($${sellerCommission}), scheduled for ${scheduledSettlementDate}`,
+      );
+    }
+  } catch (settlementError) {
+    console.error("⚠️ Failed to create seller settlements:", settlementError);
+    // Don't fail the order if settlement creation fails
+  }
+
   // Clear cart (use finalBuyerString)
   try {
     const { Cart } = await import("../../models/customers/cart.js");
@@ -1527,27 +1662,54 @@ const createPurchaseFromPaymentIntent = async (paymentIntent) => {
         { session },
       );
 
-      // ✅ Create SellerSettlement record
+      // ✅ Create SellerSettlement records for ALL sellers in this order
       const platformFeeAmount = Number(metadata.platformFeeAmount) || 0;
-      const commissionAmount = totalAmount - platformFeeAmount;
 
       const orderDate = new Date();
       const maturityDate = new Date(orderDate);
       maturityDate.setDate(maturityDate.getDate() + 3); // 3 Days Buffer
       const scheduledSettlementDate = calculateSettlementDate(maturityDate);
 
-      // Get seller from first product (assuming single seller per order as per existing logic)
-      const sellerId = purchaseProducts[0]?.seller;
+      // Group products by seller to create per-seller settlement records
+      const sellerProductsMap = {};
+      for (const pp of purchaseProducts) {
+        const sId = String(pp.seller);
+        if (!sellerProductsMap[sId]) sellerProductsMap[sId] = [];
+        sellerProductsMap[sId].push(pp);
+      }
 
-      if (sellerId) {
+      const orderSubtotal = purchaseProducts.reduce(
+        (sum, pp) => sum + pp.price * pp.quantity,
+        0,
+      );
+
+      for (const sId of Object.keys(sellerProductsMap)) {
+        const sellerItems = sellerProductsMap[sId];
+        const sellerSubtotal = sellerItems.reduce(
+          (sum, pp) => sum + pp.price * pp.quantity,
+          0,
+        );
+        // Proportional platform fee based on seller's share of the order
+        const proportion =
+          orderSubtotal > 0 ? sellerSubtotal / orderSubtotal : 0;
+        const sellerPlatformFee =
+          Math.round(platformFeeAmount * proportion * 100) / 100;
+        const sellerCommission =
+          Math.round((sellerSubtotal - sellerPlatformFee) * 100) / 100;
+
         await SellerSettlement.create(
           [
             {
-              sellerId,
+              sellerId: sId,
               purchaseId: purchase[0]._id,
-              totalOrderAmount: totalAmount,
-              commissionAmount: commissionAmount,
-              platformFee: platformFeeAmount,
+              products: sellerItems.map((pp) => ({
+                product: String(pp.product),
+                quantity: pp.quantity,
+                price: pp.price,
+              })),
+              totalOrderAmount: sellerSubtotal,
+              commissionAmount: sellerCommission,
+              platformFee: sellerPlatformFee,
               status: "pending",
               scheduledSettlementDate,
             },
@@ -1555,7 +1717,7 @@ const createPurchaseFromPaymentIntent = async (paymentIntent) => {
           { session },
         );
         console.log(
-          `✅ SellerSettlement created for seller ${sellerId}, scheduled for ${scheduledSettlementDate}`,
+          `✅ SellerSettlement created for seller ${sId} ($${sellerCommission}), scheduled for ${scheduledSettlementDate}`,
         );
       }
 
@@ -1708,18 +1870,21 @@ const handleRefund = async (charge) => {
 
     await purchase.save();
 
-    // ✅ Update SellerSettlement for refunds
-    const settlement = await SellerSettlement.findOne({
+    // ✅ Update SellerSettlement for refunds (ALL sellers in this order)
+    const settlements = await SellerSettlement.find({
       purchaseId: purchase._id,
+      status: "pending",
     });
-    if (settlement && settlement.status === "pending") {
-      // Calculate how much to deduct from seller's commission
+
+    for (const settlement of settlements) {
+      // Calculate how much to deduct from this seller's commission
       const refundPercentage = refundAmount / purchase.totalAmount;
       const commissionDeduction =
         settlement.commissionAmount * refundPercentage;
 
       settlement.commissionAmount -= commissionDeduction;
-      settlement.refundDeductions += refundAmount;
+      settlement.refundDeductions +=
+        refundAmount * (settlement.totalOrderAmount / purchase.totalAmount);
 
       if (isFullRefund) {
         settlement.status = "refunded";
@@ -1727,7 +1892,7 @@ const handleRefund = async (charge) => {
 
       await settlement.save();
       console.log(
-        `✅ SellerSettlement updated for refund: Deducted $${commissionDeduction.toFixed(2)} from commission`,
+        `✅ SellerSettlement updated for refund (seller ${settlement.sellerId}): Deducted $${commissionDeduction.toFixed(2)} from commission`,
       );
     }
 
@@ -1920,20 +2085,29 @@ const handleDisputeClosed = async (dispute) => {
 
     await purchase.save();
 
-    // ✅ Update SellerSettlement for settlement/chargeback
-    const settlement = await SellerSettlement.findOne({
+    // ✅ Update SellerSettlement for settlement/chargeback (ALL sellers in this order)
+    const settlements = await SellerSettlement.find({
       purchaseId: purchase._id,
+      status: "pending",
     });
-    if (settlement && settlement.status === "pending") {
-      if (dispute.status === "lost") {
-        // If dispute is lost, the entire commission is likely gone (or proportional)
-        const lostAmount = dispute.amount / 100;
-        const refundPercentage = Math.min(1, lostAmount / purchase.totalAmount);
+
+    if (dispute.status === "lost") {
+      const lostAmount = dispute.amount / 100;
+
+      for (const settlement of settlements) {
+        // Proportional deduction based on seller's share of the order
+        const sellerProportion =
+          settlement.totalOrderAmount / purchase.totalAmount;
+        const sellerLostAmount = lostAmount * sellerProportion;
+        const refundPercentage = Math.min(
+          1,
+          sellerLostAmount / settlement.totalOrderAmount,
+        );
         const commissionDeduction =
           settlement.commissionAmount * refundPercentage;
 
         settlement.commissionAmount -= commissionDeduction;
-        settlement.refundDeductions += lostAmount;
+        settlement.refundDeductions += sellerLostAmount;
 
         if (refundPercentage >= 1) {
           settlement.status = "refunded";
@@ -1941,7 +2115,7 @@ const handleDisputeClosed = async (dispute) => {
 
         await settlement.save();
         console.log(
-          `✅ SellerSettlement updated for lost dispute: Deducted $${commissionDeduction.toFixed(2)} from commission`,
+          `✅ SellerSettlement updated for lost dispute (seller ${settlement.sellerId}): Deducted $${commissionDeduction.toFixed(2)} from commission`,
         );
       }
     }

@@ -255,6 +255,52 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
       },
     },
 
+    // ✅ Compute seller-specific amounts (only this seller's products are in the group)
+    {
+      $addFields: {
+        // Sum of (price * quantity) for this seller's products only
+        sellerSubtotal: {
+          $reduce: {
+            input: "$products",
+            initialValue: 0,
+            in: {
+              $add: [
+                "$$value",
+                { $multiply: ["$$this.price", "$$this.quantity"] },
+              ],
+            },
+          },
+        },
+      },
+    },
+    {
+      $addFields: {
+        // Seller's proportional share of the refund amount
+        sellerRefundAmount: {
+          $cond: {
+            if: {
+              $and: [
+                { $gt: ["$refundAmount", 0] },
+                { $gt: ["$totalAmount", 0] },
+              ],
+            },
+            then: {
+              $round: [
+                {
+                  $multiply: [
+                    "$refundAmount",
+                    { $divide: ["$sellerSubtotal", "$totalAmount"] },
+                  ],
+                },
+                2,
+              ],
+            },
+            else: 0,
+          },
+        },
+      },
+    },
+
     // ✅ শুধু এই লাইন পরিবর্তন (dynamic sort)
     { $sort: { createdAt: sortType } },
     { $skip: skip },

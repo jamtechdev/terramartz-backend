@@ -19,6 +19,14 @@ const sellerSettlementSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    // Products that belong to this seller in this order
+    products: [
+      {
+        product: { type: String, ref: "Product" },
+        quantity: { type: Number },
+        price: { type: Number },
+      },
+    ],
     totalOrderAmount: {
       type: Number,
       required: true,
