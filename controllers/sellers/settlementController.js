@@ -115,7 +115,12 @@ export const getPendingSettlements = catchAsync(async (req, res, next) => {
   const settlements = await SellerSettlement.find({
     sellerId,
     status: "pending",
-  }).sort({ scheduledSettlementDate: 1 });
+  })
+    .populate({
+      path: "products.product",
+      select: "title name price productImages slug",
+    })
+    .sort({ scheduledSettlementDate: 1 });
 
   res.status(200).json({
     status: "success",
