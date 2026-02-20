@@ -203,6 +203,7 @@ export const sectionThree = catchAsync(async (req, res, next) => {
       $match: {
         role: "seller",
         accountType: "business",
+        "sellerProfile.kycStatus": "submitted",
       },
     },
     {
