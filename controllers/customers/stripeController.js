@@ -74,7 +74,7 @@ export const calculateOrderBreakdown = async (
     // ✅ Stock Validation
     if (product.stockQuantity < quantity) {
       throw new Error(
-        `Insufficient stock for "${product.title}". Only ${product.stockQuantity} available.`
+        `Insufficient stock for "${product.title}". Only ${product.stockQuantity} available.`,
       );
     }
 
@@ -1367,8 +1367,7 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
         0,
       );
       // Proportional platform fee based on seller's share of the order
-      const proportion =
-        orderSubtotal > 0 ? sellerSubtotal / orderSubtotal : 0;
+      const proportion = orderSubtotal > 0 ? sellerSubtotal / orderSubtotal : 0;
       const sellerPlatformFee =
         Math.round(platformFeeAmount * proportion * 100) / 100;
       const sellerCommission =
