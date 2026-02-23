@@ -148,6 +148,47 @@ export const getSellerOrders = catchAsync(async (req, res, next) => {
         { $unwind: "$products" },
         // Filter products for this seller again (after match on top level)
         { $match: { "products.seller": sellerId } },
+
+        // 🔹 Join with SellerSettlement to get refund details
+        {
+            $lookup: {
+                from: "sellersettlements",
+                let: { pId: "$_id", sId: sellerId },
+                pipeline: [
+                    {
+                        $match: {
+                            $expr: {
+                                $and: [
+                                    { $eq: ["$purchaseId", "$$pId"] },
+                                    { $eq: ["$sellerId", "$$sId"] },
+                                ],
+                            },
+                        },
+                    },
+                ],
+                as: "settlement",
+            },
+        },
+        { $unwind: { path: "$settlement", preserveNullAndEmptyArrays: true } },
+
+        // 🔹 Find matching product in settlement.products array
+        {
+            $addFields: {
+                productSettlement: {
+                    $arrayElemAt: [
+                        {
+                            $filter: {
+                                input: { $ifNull: ["$settlement.products", []] },
+                                as: "sp",
+                                cond: { $eq: ["$$sp.product", "$products.product"] },
+                            },
+                        },
+                        0,
+                    ],
+                },
+            },
+        },
+
         {
             $lookup: {
                 from: "products",
@@ -191,6 +232,10 @@ export const getSellerOrders = catchAsync(async (req, res, next) => {
                         price: "$products.price",
                         title: { $ifNull: ["$productInfo.title", "Unknown Product"] },
                         image: { $arrayElemAt: [{ $ifNull: ["$productInfo.productImages", []] }, 0] },
+                        // 🔹 Include refund info
+                        refundStatus: { $ifNull: ["$productSettlement.refundStatus", "none"] },
+                        refundAmount: { $ifNull: ["$productSettlement.refundAmount", 0] },
+                        refundReason: { $ifNull: ["$productSettlement.refundReason", null] },
                     }
                 }
             }
