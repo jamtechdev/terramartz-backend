@@ -134,6 +134,39 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
       },
     },
 
+    // ✅ Lookup SellerSettlement for this seller's refund status
+    {
+      $lookup: {
+        from: "sellersettlements",
+        let: { purchaseId: "$_id", sellerId: "$products.seller" },
+        pipeline: [
+          {
+            $match: {
+              $expr: {
+                $and: [
+                  { $eq: ["$purchaseId", "$$purchaseId"] },
+                  { $eq: ["$sellerId", "$$sellerId"] },
+                ],
+              },
+            },
+          },
+        ],
+        as: "sellerSettlement",
+      },
+    },
+    // Extract sellerSettlement from array
+    {
+      $addFields: {
+        sellerSettlement: {
+          $cond: {
+            if: { $gt: [{ $size: "$sellerSettlement" }, 0] },
+            then: { $arrayElemAt: ["$sellerSettlement", 0] },
+            else: null,
+          },
+        },
+      },
+    },
+
     // Project only required fields
     {
       $project: {
@@ -158,6 +191,16 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
         disputeClosedAt: 1,
         platformFeeAmount: 1,
         platformFeeRefunded: 1,
+        // ✅ Seller-specific refund status from SellerSettlement (with defaults)
+        sellerRefundStatus: {
+          $ifNull: ["$sellerSettlement.refundStatus", "none"]
+        },
+        sellerSettlementStatus: {
+          $ifNull: ["$sellerSettlement.status", "pending"]
+        },
+        sellerRefundDeductions: {
+          $ifNull: ["$sellerSettlement.refundDeductions", 0]
+        },
         products: {
           product: 1,
           quantity: 1,
@@ -253,6 +296,10 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
         disputeClosedAt: { $first: "$disputeClosedAt" },
         platformFeeAmount: { $first: "$platformFeeAmount" },
         platformFeeRefunded: { $first: "$platformFeeRefunded" },
+        // ✅ Preserve seller-specific refund status
+        sellerRefundStatus: { $first: "$sellerRefundStatus" },
+        sellerSettlementStatus: { $first: "$sellerSettlementStatus" },
+        sellerRefundDeductions: { $first: "$sellerRefundDeductions" },
         products: { $push: "$products" },
       },
     },

@@ -179,7 +179,7 @@ export const protect = catchAsync(async (req, res, next) => {
   if (!freshUser) {
     return next(
       new AppError(
-        "The user belogging to this token does no longer exist.",
+        "The user belonging to this token does no longer exist.",
         401
       )
     );

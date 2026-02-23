@@ -81,7 +81,7 @@ const app = express();
 
 // Stripe webhook
 app.use(
-  "/stripe/webhook",
+  "/api/stripe/webhook",
   express.raw({ type: "application/json" }),
   stripeController.webhookPayment,
 );

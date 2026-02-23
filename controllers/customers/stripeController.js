@@ -25,6 +25,60 @@ function generateUniqueOrderId() {
 }
 
 /**
+ * Helper to calculate overall order payment status based on all settlements
+ * @param {string} purchaseId - The purchase/order ID
+ * @returns {Object} - { paymentStatus, totalRefundAmount, refundAmountBySeller }
+ */
+export const calculateOrderPaymentStatus = async (purchaseId) => {
+  const settlements = await SellerSettlement.find({ purchaseId });
+
+  if (!settlements || settlements.length === 0) {
+    return { paymentStatus: "paid", totalRefundAmount: 0, refundAmountBySeller: {} };
+  }
+
+  let totalRefundAmount = 0;
+  const refundAmountBySeller = {};
+  let totalProducts = 0;
+  let refundedProducts = 0;
+
+  for (const settlement of settlements) {
+    for (const product of settlement.products) {
+      totalProducts++;
+      if (product.refundStatus === "refunded") {
+        refundedProducts++;
+        totalRefundAmount += product.refundAmount || 0;
+        const sellerId = String(settlement.sellerId);
+        refundAmountBySeller[sellerId] = (refundAmountBySeller[sellerId] || 0) + (product.refundAmount || 0);
+      }
+    }
+  }
+
+  let paymentStatus = "paid";
+  if (refundedProducts > 0) {
+    paymentStatus = refundedProducts === totalProducts ? "refunded" : "partially_refunded";
+  }
+
+  return { paymentStatus, totalRefundAmount, refundAmountBySeller };
+};
+
+/**
+ * Helper to update purchase payment status based on all settlements
+ * @param {string} purchaseId - The purchase/order ID
+ */
+export const updatePurchasePaymentStatus = async (purchaseId) => {
+  const { paymentStatus, totalRefundAmount } = await calculateOrderPaymentStatus(purchaseId);
+  
+  const purchase = await Purchase.findById(purchaseId);
+  if (purchase) {
+    purchase.paymentStatus = paymentStatus;
+    purchase.refundAmount = totalRefundAmount;
+    await purchase.save();
+  }
+  
+  return { paymentStatus, totalRefundAmount };
+};
+
+/**
  * Shared helper to calculate full checkout breakdown from database authoritative data.
  * @param {Array} products - Array of { product: id, quantity }
  * @param {string} shippingMethod - "standard", "express", or "overnight"
@@ -1828,28 +1882,18 @@ const handleRefund = async (charge) => {
     const hasPlatformFee = platformFeeAmount > 0;
 
     // ✅ Calculate application fee refund
-    // When refunding with Stripe Connect, the application fee is automatically handled
-    // But we need to track it for our records
     let platformFeeRefunded = 0;
     if (hasPlatformFee) {
       if (isFullRefund) {
-        // Full refund = full platform fee reversal
         platformFeeRefunded = platformFeeAmount;
       } else {
-        // Partial refund = proportional platform fee reversal
         const refundPercentage = refundAmount / purchase.totalAmount;
         platformFeeRefunded = platformFeeAmount * refundPercentage;
         platformFeeRefunded = Math.round(platformFeeRefunded * 100) / 100;
       }
     }
 
-    // Update purchase status
-    purchase.paymentStatus = isFullRefund ? "refunded" : "partially_refunded";
-    purchase.refundAmount = refundAmount;
-    purchase.refundedAt = new Date();
-    purchase.platformFeeRefunded = platformFeeRefunded; // ✅ Track platform fee refund
-
-    // Add refund timeline event
+    // Add refund timeline event at order level
     purchase.orderTimeline.push({
       event: isFullRefund ? "Full Refund Issued" : "Partial Refund Issued",
       timestamp: new Date(),
@@ -1864,7 +1908,6 @@ const handleRefund = async (charge) => {
           $inc: { stockQuantity: item.quantity },
         });
 
-        // Update product timeline
         item.timeline.push({
           event: "Stock Restored (Refund)",
           timestamp: new Date(),
@@ -1877,31 +1920,151 @@ const handleRefund = async (charge) => {
 
     await purchase.save();
 
-    // ✅ Update SellerSettlement for refunds (ALL sellers in this order)
+    // ✅ Check refund metadata for seller/product information
+    const refundMetadata = charge.refunds?.data?.[0]?.metadata || {};
+    const refundProductId = refundMetadata.productId || null;
+    const refundSellerId = refundMetadata.sellerId || null;
+
+    // ✅ Get all settlements for this purchase
     const settlements = await SellerSettlement.find({
       purchaseId: purchase._id,
-      status: "pending",
     });
 
-    for (const settlement of settlements) {
-      // Calculate how much to deduct from this seller's commission
-      const refundPercentage = refundAmount / purchase.totalAmount;
-      const commissionDeduction =
-        settlement.commissionAmount * refundPercentage;
-
-      settlement.commissionAmount -= commissionDeduction;
-      settlement.refundDeductions +=
-        refundAmount * (settlement.totalOrderAmount / purchase.totalAmount);
-
-      if (isFullRefund) {
-        settlement.status = "refunded";
-      }
-
-      await settlement.save();
+    // ✅ CASE 1: Refund includes specific product/seller info (from createRefund with productId)
+    if (refundProductId && refundSellerId) {
       console.log(
-        `✅ SellerSettlement updated for refund (seller ${settlement.sellerId}): Deducted $${commissionDeduction.toFixed(2)} from commission`,
+        `📦 Processing seller-specific refund: Product ${refundProductId}, Seller ${refundSellerId}`
       );
+
+      // Find the specific seller's settlement
+      const sellerSettlement = settlements.find(
+        s => String(s.sellerId) === String(refundSellerId)
+      );
+
+      if (sellerSettlement) {
+        // Find the specific product in this settlement
+        const settlementProduct = sellerSettlement.products.find(
+          p => String(p.product) === String(refundProductId)
+        );
+
+        if (settlementProduct) {
+          // Mark ONLY this product as refunded
+          settlementProduct.refundStatus = "refunded";
+          settlementProduct.refundAmount = refundAmount;
+          settlementProduct.refundedAt = new Date();
+
+          // Update settlement refund tracking
+          sellerSettlement.refundDeductions = (sellerSettlement.refundDeductions || 0) + refundAmount;
+
+          // Calculate commission deduction
+          const commissionDeduction =
+            sellerSettlement.commissionAmount * (refundAmount / sellerSettlement.totalOrderAmount);
+          sellerSettlement.commissionAmount -= commissionDeduction;
+
+          // Update settlement overall refund status - check THIS seller's products only
+          const allProductsRefunded = sellerSettlement.products.every(
+            (p) => p.refundStatus === "refunded"
+          );
+          const anyProductsRefunded = sellerSettlement.products.some(
+            (p) => p.refundStatus === "refunded"
+          );
+          
+          // Set refundStatus based on this seller's completion
+          sellerSettlement.refundStatus = allProductsRefunded
+            ? "full"
+            : anyProductsRefunded
+              ? "partial"
+              : "none";
+
+          // Update settlement status when all seller products are refunded
+          if (allProductsRefunded) {
+            sellerSettlement.status = "refunded";
+          }
+
+          await sellerSettlement.save();
+          console.log(
+            `✅ SellerSettlement updated for seller ${refundSellerId}: refundStatus="${sellerSettlement.refundStatus}", status="${sellerSettlement.status}", allProductsRefunded=${allProductsRefunded}, totalProducts=${sellerSettlement.products.length}`
+          );
+        } else {
+          console.error(`❌ Product ${refundProductId} not found in settlement for seller ${refundSellerId}`);
+        }
+      } else {
+        console.error(`❌ Settlement not found for seller ${refundSellerId}`);
+      }
     }
+    // ✅ CASE 2: Full order refund (all sellers)
+    else if (isFullRefund) {
+      console.log(`📦 Processing FULL order refund - updating ALL sellers`);
+
+      for (const settlement of settlements) {
+        // Calculate this seller's proportion of the order
+        const sellerProportion = settlement.totalOrderAmount / purchase.totalAmount;
+        const sellerRefundAmount = refundAmount * sellerProportion;
+
+        // Update each product in this settlement proportionally
+        for (const product of settlement.products) {
+          const productValue = product.price * product.quantity;
+          const productProportion =
+            settlement.totalOrderAmount > 0
+              ? productValue / settlement.totalOrderAmount
+              : 0;
+          const productRefundAmount = sellerRefundAmount * productProportion;
+
+          product.refundAmount = (product.refundAmount || 0) + productRefundAmount;
+          product.refundStatus = "refunded";
+          product.refundedAt = new Date();
+        }
+
+        // Update settlement refund tracking
+        settlement.refundDeductions += sellerRefundAmount;
+
+        // Calculate commission deduction
+        const commissionDeduction =
+          settlement.commissionAmount * (sellerRefundAmount / settlement.totalOrderAmount);
+        settlement.commissionAmount -= commissionDeduction;
+
+        // Update settlement overall refund status
+        settlement.refundStatus = "full";
+        settlement.status = "refunded";
+
+        await settlement.save();
+        console.log(
+          `✅ SellerSettlement updated for seller ${settlement.sellerId} (full refund): Deducted $${commissionDeduction}`
+        );
+      }
+    }
+    // ✅ CASE 3: Partial refund without product info (legacy/platform refund)
+    // This happens when customer initiates refund from Stripe dashboard without product details
+    // We distribute proportionally but DON'T mark products as fully refunded
+    else {
+      console.log(`📦 Processing PARTIAL refund without product info - distributing proportionally`);
+
+      for (const settlement of settlements) {
+        const sellerProportion = settlement.totalOrderAmount / purchase.totalAmount;
+        const sellerRefundAmount = refundAmount * sellerProportion;
+
+        // Add to refund deductions but DON'T change product refundStatus
+        // This tracks the money deducted without marking products as refunded
+        settlement.refundDeductions = (settlement.refundDeductions || 0) + sellerRefundAmount;
+
+        const commissionDeduction =
+          settlement.commissionAmount * (sellerRefundAmount / settlement.totalOrderAmount);
+        settlement.commissionAmount -= commissionDeduction;
+
+        // Mark as partial if there's any refund
+        if (sellerRefundAmount > 0 && settlement.refundStatus !== "full") {
+          settlement.refundStatus = "partial";
+        }
+
+        await settlement.save();
+        console.log(
+          `✅ SellerSettlement updated for seller ${settlement.sellerId} (partial refund): Deducted $${commissionDeduction}`
+        );
+      }
+    }
+
+    // ✅ Update purchase payment status based on all settlements
+    await updatePurchasePaymentStatus(purchase._id);
 
     console.log(
       `✅ ${isFullRefund ? "Full" : "Partial"} refund processed for order:`,
@@ -1912,9 +2075,6 @@ const handleRefund = async (charge) => {
         `   Platform fee reversed: $${platformFeeRefunded.toFixed(2)}`,
       );
     }
-
-    // TODO: Send email notification to buyer about refund
-    // await sendRefundEmail(purchase);
   } catch (err) {
     console.error("❌ Error handling refund:", err);
     throw err;
@@ -2222,7 +2382,7 @@ export const requestRefundByCustomer = catchAsync(async (req, res, next) => {
 
 // 🔹 Manual Refund Controller (for admin/seller initiated refunds)
 export const createRefund = catchAsync(async (req, res, next) => {
-  const { orderId, amount, reason, action } = req.body;
+  const { orderId, amount, reason, action, productId, sellerId } = req.body;
 
   // 1. Find the purchase
   const purchase = await Purchase.findOne({ orderId });
@@ -2233,19 +2393,45 @@ export const createRefund = catchAsync(async (req, res, next) => {
       return next(new AppError("Order not found", 404));
     }
 
-    if (purchase.status !== "return_requested") {
-      return next(new AppError("Order is not in return_requested status", 400));
+    // If productId provided, reject at settlement level
+    if (productId) {
+      const product = purchase.products.find(
+        (p) => String(p.product) === String(productId),
+      );
+      if (product) {
+        const productSellerId = String(product.seller || sellerId);
+        // Update settlement instead of purchase
+        const settlement = await SellerSettlement.findOne({
+          purchaseId: purchase._id,
+          sellerId: productSellerId,
+        });
+        if (settlement) {
+          const settlementProduct = settlement.products.find(
+            (p) => String(p.product) === String(productId),
+          );
+          if (settlementProduct) {
+            settlementProduct.refundStatus = "rejected";
+            settlementProduct.refundReason = reason || "Refund rejected";
+            await settlement.save();
+          }
+        }
+      }
+      await purchase.save();
+    } else {
+      if (purchase.status !== "return_requested") {
+        return next(new AppError("Order is not in return_requested status", 400));
+      }
+
+      purchase.status = "return_rejected";
+      purchase.orderTimeline.push({
+        event: "Return Rejected",
+        timestamp: new Date(),
+        location: "Admin/Seller",
+        notes: `Reason: ${reason || "Refund rejected"}`,
+      });
+
+      await purchase.save();
     }
-
-    purchase.status = "return_rejected";
-    purchase.orderTimeline.push({
-      event: "Return Rejected",
-      timestamp: new Date(),
-      location: "Admin/Seller",
-      notes: `Reason: ${reason || "Refund rejected"}`,
-    });
-
-    await purchase.save();
 
     // Notify Customer about rejection
     try {
@@ -2279,19 +2465,153 @@ export const createRefund = catchAsync(async (req, res, next) => {
     return next(new AppError("No payment intent found for this order", 400));
   }
 
-  // Check if already refunded
+  // 2. Handle product-specific refund (multi-seller scenario)
+  if (productId) {
+    // Find the specific product in the order
+    const product = purchase.products.find(
+      (p) => String(p.product) === String(productId),
+    );
+
+    if (!product) {
+      return next(new AppError("Product not found in order", 404));
+    }
+
+    // Determine the seller for this product
+    const productSellerId = String(product.seller || sellerId);
+    if (!productSellerId) {
+      return next(new AppError("Seller information not found for this product", 400));
+    }
+
+    // Check if already refunded in settlement
+    const settlement = await SellerSettlement.findOne({
+      purchaseId: purchase._id,
+      sellerId: productSellerId,
+    });
+
+    if (settlement) {
+      const settlementProduct = settlement.products.find(
+        (p) => String(p.product) === String(productId),
+      );
+      if (settlementProduct && settlementProduct.refundStatus === "refunded") {
+        return next(new AppError("This product is already refunded", 400));
+      }
+    }
+
+    // Calculate refund amount (default to product price * quantity)
+    const productRefundAmount = amount || (product.price * product.quantity);
+    const isFullProductRefund = productRefundAmount >= (product.price * product.quantity);
+
+    // Get platform fee information
+    const platformFeeAmount = purchase.platformFeeAmount || 0;
+    const productProportion = purchase.totalAmount > 0
+      ? (product.price * product.quantity) / purchase.totalAmount
+      : 0;
+    const platformFeeRefund = platformFeeAmount * productProportion;
+
+    // 3. Create refund in Stripe
+    const refundConfig = {
+      payment_intent: purchase.paymentIntentId,
+      amount: Math.round(productRefundAmount * 100),
+      reason: "requested_by_customer",
+      metadata: {
+        orderId: purchase.orderId,
+        productId: String(product.product),
+        sellerId: productSellerId,
+        refundType: isFullProductRefund ? "full_product" : "partial_product",
+        platformFeeRefunded: platformFeeRefund.toString(),
+      },
+    };
+
+    const refund = await stripe.refunds.create(refundConfig);
+
+    // 4. Update the specific seller's settlement (NOT purchase products)
+    if (settlement) {
+      const settlementProduct = settlement.products.find(
+        (p) => String(p.product) === String(product.product),
+      );
+
+      if (settlementProduct) {
+        settlementProduct.refundStatus = "refunded";
+        settlementProduct.refundAmount = productRefundAmount;
+        settlementProduct.refundedAt = new Date();
+        settlementProduct.refundReason = reason || "Manual refund";
+      }
+
+      // Update settlement refund tracking
+      settlement.refundDeductions = (settlement.refundDeductions || 0) + productRefundAmount;
+
+      // Calculate commission deduction
+      const commissionDeduction =
+        settlement.commissionAmount * (productRefundAmount / settlement.totalOrderAmount);
+      settlement.commissionAmount -= commissionDeduction;
+
+      // Update settlement overall refund status - check THIS seller's products only
+      const allProductsRefunded = settlement.products.every(
+        (p) => p.refundStatus === "refunded",
+      );
+      const anyProductsRefunded = settlement.products.some(
+        (p) => p.refundStatus === "refunded",
+      );
+      
+      // Set refundStatus based on this seller's completion
+      settlement.refundStatus = allProductsRefunded
+        ? "full"
+        : anyProductsRefunded
+          ? "partial"
+          : "none";
+
+      // Update settlement status when all seller products are refunded
+      if (allProductsRefunded) {
+        settlement.status = "refunded";
+      }
+
+      await settlement.save();
+      
+      console.log(
+        `✅ SellerSettlement updated for seller ${productSellerId}: refundStatus="${settlement.refundStatus}", status="${settlement.status}", allProductsRefunded=${allProductsRefunded}, totalProducts=${settlement.products.length}`
+      );
+    }
+
+    // 5. Update purchase timeline
+    purchase.orderTimeline.push({
+      event: isFullProductRefund ? "Product Refund Approved" : "Partial Product Refund Approved",
+      timestamp: new Date(),
+      location: "Admin/Seller",
+      notes: `Reason: ${reason || "Manual Refund"}, Product: ${String(product.product)}, Amount: $${productRefundAmount.toFixed(2)}`,
+    });
+
+    // 6. Update overall purchase payment status based on all settlements
+    await updatePurchasePaymentStatus(purchase._id);
+
+    await purchase.save();
+
+    return res.status(200).json({
+      success: true,
+      message: `${isFullProductRefund ? "Full" : "Partial"} refund for product processed successfully`,
+      refund: {
+        id: refund.id,
+        amount: productRefundAmount,
+        productId: String(product.product),
+        sellerId: productSellerId,
+        platformFeeRefunded: platformFeeRefund,
+        status: refund.status,
+      },
+      order: purchase,
+    });
+  }
+  // 8. Handle full order refund (legacy behavior - all products, all sellers)
+  // Check if already fully refunded
   if (purchase.paymentStatus === "refunded") {
     return next(new AppError("Order already refunded", 400));
   }
 
-  // 2. Calculate refund details
   const refundAmount = amount || purchase.totalAmount;
   const isPartial = amount && amount < purchase.totalAmount;
 
   // Get platform fee information
   const platformFeeAmount = purchase.platformFeeAmount || 0;
 
-  // Calculate platform fee refund (Internal calculation)
+  // Calculate platform fee refund
   let platformFeeRefund = 0;
   if (platformFeeAmount > 0) {
     if (isPartial) {
@@ -2303,11 +2623,10 @@ export const createRefund = catchAsync(async (req, res, next) => {
     }
   }
 
-  // 3. Create refund in Stripe
-  // Since we hold funds and transfer manually via Cron, this is a simple platform refund.
+  // Create refund in Stripe
   const refundConfig = {
     payment_intent: purchase.paymentIntentId,
-    amount: Math.round(refundAmount * 100), // Convert to cents
+    amount: Math.round(refundAmount * 100),
     reason: "requested_by_customer",
     metadata: {
       orderId: purchase.orderId,
@@ -2318,13 +2637,31 @@ export const createRefund = catchAsync(async (req, res, next) => {
 
   const refund = await stripe.refunds.create(refundConfig);
 
-  // 4. Update Purchase Record
-  purchase.paymentStatus = isPartial ? "partially_refunded" : "refunded";
+  // Update all settlements (NOT purchase products)
+  const settlements = await SellerSettlement.find({ purchaseId: purchase._id });
+  for (const settlement of settlements) {
+    const sellerProportion = settlement.totalOrderAmount / purchase.totalAmount;
+    const sellerRefundAmount = refundAmount * sellerProportion;
 
-  // purchase.refundAmount = (purchase.refundAmount || 0) + refundAmount;
+    for (const product of settlement.products) {
+      product.refundStatus = "refunded";
+      product.refundAmount = sellerRefundAmount * ((product.price * product.quantity) / settlement.totalOrderAmount);
+      product.refundedAt = new Date();
+    }
+
+    settlement.refundDeductions = (settlement.refundDeductions || 0) + sellerRefundAmount;
+    const commissionDeduction = settlement.commissionAmount * (sellerRefundAmount / settlement.totalOrderAmount);
+    settlement.commissionAmount -= commissionDeduction;
+    settlement.refundStatus = "full";
+    settlement.status = "refunded";
+
+    await settlement.save();
+  }
+
+  // Update Purchase Record
+  purchase.paymentStatus = isPartial ? "partially_refunded" : "refunded";
   purchase.refundedAt = new Date();
-  purchase.platformFeeRefunded =
-    (purchase.platformFeeRefunded || 0) + platformFeeRefund;
+  purchase.platformFeeRefunded = (purchase.platformFeeRefunded || 0) + platformFeeRefund;
 
   purchase.orderTimeline.push({
     event: isPartial ? "Partial Refund Approved" : "Full Refund Approved",

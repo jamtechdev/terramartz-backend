@@ -114,7 +114,8 @@ export const processSettlementsJob = async () => {
 
 export const startSettlementJob = () => {
   // Run every Wednesday at 00:01 AM
-  const cronExpression = "1 0 * * 3";
+  // const cronExpression = "1 0 * * 3";
+  const cronExpression = "* * * * *";
   console.log("⏰ Settlement job scheduled: Every Wednesday at 00:01 AM");
 
   cron.schedule(cronExpression, async () => {
