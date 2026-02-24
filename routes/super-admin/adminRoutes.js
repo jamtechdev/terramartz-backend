@@ -8,12 +8,6 @@ import {
 } from "../../controllers/super-admin/adminSelectionController.js";
 import { protect } from "../../controllers/authController.js";
 import { restrictToAdmin } from "../../middleware/super-admin/restrictToAdmin.js";
-import {
-  createFaq,
-  updateFaq,
-  deleteFaq,
-} from "../../controllers/super-admin/faqController.js";
-
 router.post(
   "/active-tax-with-dicount",
   protect,
@@ -33,12 +27,5 @@ router.delete(
   restrictToAdmin,
   deleteFeatureProduct
 );
-
-// faq related apis code start
-
-router.post("/faqs", protect, restrictToAdmin, createFaq);
-router.patch("/faqs/:id", protect, restrictToAdmin, updateFaq);
-router.delete("/faqs/:id", protect, restrictToAdmin, deleteFaq);
-// faq related apis code end
 
 export default router;
