@@ -24,7 +24,6 @@ export const createPromoCode = catchAsync(async (req, res, next) => {
       isActive,
       usageLimit,
       perUserLimit,
-      sellerId,
     } = req.body;
 
     if (!code || !type) {
@@ -34,7 +33,6 @@ export const createPromoCode = catchAsync(async (req, res, next) => {
     // Ensure unique code per seller (or globally if admin)
     const existing = await PromoCode.findOne({
       code,
-      sellerId: req.user._id,
     }).session(session);
     if (existing) {
       throw new AppError("Promo code already exists", 400);
@@ -51,7 +49,6 @@ export const createPromoCode = catchAsync(async (req, res, next) => {
           isActive,
           usageLimit,
           perUserLimit,
-          sellerId: req.user._id,
         },
       ],
       { session },
@@ -76,10 +73,7 @@ export const getAllPromoCodes = catchAsync(async (req, res, next) => {
   const { page = 1, limit = 20, search, type, isActive } = req.query;
 
   let queryObj = {};
-  // Restrict to seller's own promo codes unless admin
-  if (req.user && req.user.role === "seller") {
-    queryObj.sellerId = req.user._id;
-  }
+
   if (search) {
     queryObj.code = { $regex: new RegExp(search, "i") };
   }
@@ -111,22 +105,12 @@ export const getPromoCode = catchAsync(async (req, res, next) => {
 
 // =================== UPDATE PROMO CODE ===================
 export const updatePromoCode = catchAsync(async (req, res, next) => {
-  if (!req.user || req.user.role !== "seller") {
-    return next(new AppError("Not authorized to update promo codes", 403));
-  }
-
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
     const promo = await PromoCode.findById(req.params.id).session(session);
-    if (
-      req.user.role === "seller" &&
-      promo.sellerId &&
-      promo.sellerId.toString() !== req.user._id.toString()
-    ) {
-      throw new AppError("Not authorized to update this promo code", 403);
-    }
+
     if (!promo) throw new AppError("Promo code not found", 404);
 
     const updatableFields = [
@@ -180,7 +164,9 @@ export const validatePromoCode = catchAsync(async (req, res, next) => {
     const productDocs = await Product.find({ _id: { $in: products } });
     if (productDocs.length > 0) {
       // Use the first product's owner as the target seller for validation
-      sellerId = productDocs[0].createdBy?.toString() || productDocs[0].seller?.toString();
+      sellerId =
+        productDocs[0].createdBy?.toString() ||
+        productDocs[0].seller?.toString();
     }
   }
 
@@ -288,7 +274,9 @@ export const applyPromoCode = catchAsync(async (req, res, next) => {
 
   // ✅ Total usage limit check
   if (promo.usageLimit && promo.usedCount >= promo.usageLimit) {
-    return next(new AppError("This promo code has reached its usage limit", 400));
+    return next(
+      new AppError("This promo code has reached its usage limit", 400),
+    );
   }
 
   // ✅ Per-user limit check — only count COMPLETED purchases (purchase_id is set)
@@ -302,7 +290,11 @@ export const applyPromoCode = catchAsync(async (req, res, next) => {
   }
 
   // ✅ Minimum order amount check
-  if (subtotal !== undefined && promo.minOrderAmount && subtotal < promo.minOrderAmount) {
+  if (
+    subtotal !== undefined &&
+    promo.minOrderAmount &&
+    subtotal < promo.minOrderAmount
+  ) {
     return next(
       new AppError(`Minimum order amount is $${promo.minOrderAmount}`, 400),
     );
