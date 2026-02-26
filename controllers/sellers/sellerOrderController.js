@@ -21,6 +21,7 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
   const page = parseInt(req.query.page, 10) || 1;
   const limit = parseInt(req.query.limit, 10) || 10;
   const skip = (page - 1) * limit;
+  const { status } = req.query;
 
   // ✅ শুধু এই এক লাইন নতুন
   const sortType = req.query.sort === "oldest" ? 1 : -1;
@@ -67,6 +68,7 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
         ].filter(Boolean),
       },
     },
+    ...(status ? [{ $match: { status } }] : []),
 
     // ProductPerformance
     {
@@ -132,6 +134,39 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
       },
     },
 
+    // ✅ Lookup SellerSettlement for this seller's refund status
+    {
+      $lookup: {
+        from: "sellersettlements",
+        let: { purchaseId: "$_id", sellerId: "$products.seller" },
+        pipeline: [
+          {
+            $match: {
+              $expr: {
+                $and: [
+                  { $eq: ["$purchaseId", "$$purchaseId"] },
+                  { $eq: ["$sellerId", "$$sellerId"] },
+                ],
+              },
+            },
+          },
+        ],
+        as: "sellerSettlement",
+      },
+    },
+    // Extract sellerSettlement from array
+    {
+      $addFields: {
+        sellerSettlement: {
+          $cond: {
+            if: { $gt: [{ $size: "$sellerSettlement" }, 0] },
+            then: { $arrayElemAt: ["$sellerSettlement", 0] },
+            else: null,
+          },
+        },
+      },
+    },
+
     // Project only required fields
     {
       $project: {
@@ -156,6 +191,16 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
         disputeClosedAt: 1,
         platformFeeAmount: 1,
         platformFeeRefunded: 1,
+        // ✅ Seller-specific refund status from SellerSettlement (with defaults)
+        sellerRefundStatus: {
+          $ifNull: ["$sellerSettlement.refundStatus", "none"]
+        },
+        sellerSettlementStatus: {
+          $ifNull: ["$sellerSettlement.status", "pending"]
+        },
+        sellerRefundDeductions: {
+          $ifNull: ["$sellerSettlement.refundDeductions", 0]
+        },
         products: {
           product: 1,
           quantity: 1,
@@ -251,7 +296,57 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
         disputeClosedAt: { $first: "$disputeClosedAt" },
         platformFeeAmount: { $first: "$platformFeeAmount" },
         platformFeeRefunded: { $first: "$platformFeeRefunded" },
+        // ✅ Preserve seller-specific refund status
+        sellerRefundStatus: { $first: "$sellerRefundStatus" },
+        sellerSettlementStatus: { $first: "$sellerSettlementStatus" },
+        sellerRefundDeductions: { $first: "$sellerRefundDeductions" },
         products: { $push: "$products" },
+      },
+    },
+
+    // ✅ Compute seller-specific amounts (only this seller's products are in the group)
+    {
+      $addFields: {
+        // Sum of (price * quantity) for this seller's products only
+        sellerSubtotal: {
+          $reduce: {
+            input: "$products",
+            initialValue: 0,
+            in: {
+              $add: [
+                "$$value",
+                { $multiply: ["$$this.price", "$$this.quantity"] },
+              ],
+            },
+          },
+        },
+      },
+    },
+    {
+      $addFields: {
+        // Seller's proportional share of the refund amount
+        sellerRefundAmount: {
+          $cond: {
+            if: {
+              $and: [
+                { $gt: ["$refundAmount", 0] },
+                { $gt: ["$totalAmount", 0] },
+              ],
+            },
+            then: {
+              $round: [
+                {
+                  $multiply: [
+                    "$refundAmount",
+                    { $divide: ["$sellerSubtotal", "$totalAmount"] },
+                  ],
+                },
+                2,
+              ],
+            },
+            else: 0,
+          },
+        },
       },
     },
 
@@ -274,14 +369,20 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
   // }
 
   // Count total orders with same matching logic (String + ObjectId for backward compatibility)
-  const totalOrders = await Purchase.countDocuments({
+  const countQuery = {
     $or: [
       { "products.seller": sellerIdString },
       ...(sellerIdAlt1 ? [{ "products.seller": sellerIdAlt1 }] : []),
       ...(sellerIdAlt2 ? [{ "products.seller": sellerIdAlt2 }] : []),
       ...(sellerObjectId ? [{ "products.seller": sellerObjectId }] : []),
-    ].filter(Boolean),
-  });
+    ].filter(Boolean)
+  };
+
+  if (status) {
+    countQuery.status = status;
+  }
+
+  const totalOrders = await Purchase.countDocuments(countQuery);
 
   // console.log("📦 Found orders:", orders.length);
   // console.log("📦 Total orders:", totalOrders);
@@ -385,12 +486,12 @@ export const updateOrderStatus = catchAsync(async (req, res, next) => {
     order.status = "delivered";
   } else if (
     order.products.some((p) =>
-      ["shipped", "in_transit"].includes(
+      ["shipped"].includes(
         p.timeline[p.timeline.length - 1].event,
       ),
     )
   ) {
-    order.status = "in_transit";
+    order.status = "shipped";
   } else {
     order.status = status;
   }
@@ -435,9 +536,10 @@ export const updateOrderStatus = catchAsync(async (req, res, next) => {
       const statusMessages = {
         processing: "Your order is now being processed",
         shipped: "Your order has been shipped",
-        in_transit: "Your order is in transit",
         delivered: "Your order has been delivered",
         new: "Your order has been confirmed",
+        cancelled: "Your order has been cancelled",
+        refunded: "Your order has been refunded",
       };
 
       const statusMessage =

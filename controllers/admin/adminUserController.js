@@ -7,6 +7,7 @@ import { User } from "../../models/users.js";
 import catchAsync from "../../utils/catchasync.js";
 import AppError from "../../utils/apperror.js";
 import { Purchase } from "../../models/customers/purchase.js";
+import { LoyaltyPoint } from "../../models/customers/loyaltyPoints.js";
 
 export const getAllUsers = catchAsync(async (req, res) => {
   const { search, status, role, page = 1, limit = 10 } = req.query;
@@ -184,6 +185,17 @@ export const getUserById = catchAsync(async (req, res, next) => {
     return next(new AppError("User not found", 404));
   }
 
+  let loyaltyPoints = 0;
+  if (user.role === "user") {
+    const loyaltyResult = await LoyaltyPoint.aggregate([
+      { $match: { user: id } },
+      { $group: { _id: null, totalPoints: { $sum: "$points" } } },
+    ]);
+    if (loyaltyResult && loyaltyResult.length > 0) {
+      loyaltyPoints = loyaltyResult[0].totalPoints;
+    }
+  }
+
   // Format the response
   const fullName = [user.firstName, user.middleName, user.lastName]
     .filter(Boolean)
@@ -220,6 +232,7 @@ export const getUserById = catchAsync(async (req, res, next) => {
       twoFactorMethod: user.twoFactorMethod,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
+      loyaltyPoints: user.role === "user" ? loyaltyPoints : undefined,
     },
   });
 });
@@ -396,7 +409,7 @@ export const updateUserDetails = catchAsync(async (req, res, next) => {
     return next(
       new AppError(
         "No valid fields to update. Allowed fields: " +
-          allowedFields.join(", "),
+        allowedFields.join(", "),
         400,
       ),
     );

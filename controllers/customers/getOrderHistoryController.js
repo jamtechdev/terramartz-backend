@@ -1,4 +1,5 @@
 import { Purchase } from "../../models/customers/purchase.js";
+import { SellerSettlement } from "../../models/seller/sellerSettlement.js";
 
 import catchAsync from "../../utils/catchasync.js";
 import APIFeatures from "../../utils/apiFeatures.js";
@@ -43,19 +44,72 @@ export const getOrderBySessionId = catchAsync(async (req, res, next) => {
     // Still return the order if session ID matches (session ID is unique and secure)
   }
 
-  const products = order.products.map((p) => ({
-    _id: p._id,
-    quantity: p.quantity,
-    price: p.price,
-    seller: p.seller,
-    product: {
-      _id: p.product?._id || null,
-      title: p.product?.title || p.product?.name || null,
-      slug: p.product?.slug || null,
-    },
-  }));
+  // ✅ Fetch SellerSettlements for this order to get per-product refund status
+  const settlements = await SellerSettlement.find({
+    purchaseId: order._id
+  }).lean();
+
+  // ✅ Create a map: sellerId -> products with refund info
+  const settlementMap = {};
+  for (const settlement of settlements) {
+    const sellerIdStr = String(settlement.sellerId);
+    
+    // Map each product's refund status
+    const productRefundMap = {};
+    for (const p of settlement.products) {
+      productRefundMap[String(p.product)] = {
+        refundStatus: p.refundStatus || "none",
+        refundAmount: p.refundAmount || 0,
+        refundRequestedAt: p.refundRequestedAt || null,
+        refundedAt: p.refundedAt || null,
+        refundReason: p.refundReason || null,
+      };
+    }
+    
+    settlementMap[sellerIdStr] = {
+      refundStatus: settlement.refundStatus || "none",
+      refundDeductions: settlement.refundDeductions || 0,
+      products: productRefundMap,
+    };
+  }
+
+  const products = order.products.map((p) => {
+    const sellerIdStr = String(p.seller);
+    const sellerSettlement = settlementMap[sellerIdStr];
+    const productRefundInfo = sellerSettlement?.products?.[String(p.product)] || {
+      refundStatus: "none",
+      refundAmount: 0,
+      refundRequestedAt: null,
+      refundedAt: null,
+      refundReason: null,
+    };
+
+    return {
+      _id: p._id,
+      quantity: p.quantity,
+      price: p.price,
+      seller: p.seller,
+      product: {
+        _id: p.product?._id || null,
+        title: p.product?.title || p.product?.name || null,
+        slug: p.product?.slug || null,
+      },
+      // ✅ Per-product refund info from SellerSettlement
+      refundStatus: productRefundInfo.refundStatus,
+      refundAmount: productRefundInfo.refundAmount,
+      refundRequestedAt: productRefundInfo.refundRequestedAt,
+      refundedAt: productRefundInfo.refundedAt,
+      refundReason: productRefundInfo.refundReason,
+    };
+  });
 
   const totalItems = order.products.reduce((sum, p) => sum + p.quantity, 0);
+
+  // ✅ Calculate per-seller refund status for customer view
+  const sellerRefundStatuses = {};
+  for (const sellerId of Object.keys(settlementMap)) {
+    sellerRefundStatuses[sellerId] = settlementMap[sellerId].refundStatus;
+  }
 
   const formattedOrder = {
     _id: order._id,
@@ -69,6 +123,23 @@ export const getOrderBySessionId = catchAsync(async (req, res, next) => {
     shippingAddress: order.shippingAddress,
     createdAt: order.createdAt,
     updatedAt: order.updatedAt,
+    // ✅ Refund related data
+    refundAmount: order.refundAmount || 0,
+    refundedAt: order.refundedAt || null,
+    refundReason: order.refundReason || null,
+    refundRequestedAt: order.refundRequestedAt || null,
+    refundRejectReason: order.refundRejectReason || null,
+    platformFeeAmount: order.platformFeeAmount || 0,
+    platformFeeRefunded: order.platformFeeRefunded || 0,
+    // ✅ Per-seller refund status
+    sellerRefundStatuses,
+    // ✅ Dispute related data
+    disputeId: order.disputeId || null,
+    disputeStatus: order.disputeStatus || null,
+    disputeReason: order.disputeReason || null,
+    disputeAmount: order.disputeAmount || 0,
+    disputeCreatedAt: order.disputeCreatedAt || null,
+    disputeClosedAt: order.disputeClosedAt || null,
   };
 
   res.status(200).json({
@@ -109,19 +180,72 @@ export const getOrderByOrderId = catchAsync(async (req, res, next) => {
     return next(new AppError("Order not found", 404));
   }
 
-  const products = order.products.map((p) => ({
-    _id: p._id,
-    quantity: p.quantity,
-    price: p.price,
-    seller: p.seller,
-    product: {
-      _id: p.product?._id || null,
-      title: p.product?.title || p.product?.name || null,
-      slug: p.product?.slug || null,
-    },
-  }));
+  // ✅ Fetch SellerSettlements for this order to get per-product refund status
+  const settlements = await SellerSettlement.find({
+    purchaseId: order._id
+  }).lean();
+
+  // ✅ Create a map: sellerId -> products with refund info
+  const settlementMap = {};
+  for (const settlement of settlements) {
+    const sellerIdStr = String(settlement.sellerId);
+    
+    // Map each product's refund status
+    const productRefundMap = {};
+    for (const p of settlement.products) {
+      productRefundMap[String(p.product)] = {
+        refundStatus: p.refundStatus || "none",
+        refundAmount: p.refundAmount || 0,
+        refundRequestedAt: p.refundRequestedAt || null,
+        refundedAt: p.refundedAt || null,
+        refundReason: p.refundReason || null,
+      };
+    }
+    
+    settlementMap[sellerIdStr] = {
+      refundStatus: settlement.refundStatus || "none",
+      refundDeductions: settlement.refundDeductions || 0,
+      products: productRefundMap,
+    };
+  }
+
+  const products = order.products.map((p) => {
+    const sellerIdStr = String(p.seller);
+    const sellerSettlement = settlementMap[sellerIdStr];
+    const productRefundInfo = sellerSettlement?.products?.[String(p.product)] || {
+      refundStatus: "none",
+      refundAmount: 0,
+      refundRequestedAt: null,
+      refundedAt: null,
+      refundReason: null,
+    };
+
+    return {
+      _id: p._id,
+      quantity: p.quantity,
+      price: p.price,
+      seller: p.seller,
+      product: {
+        _id: p.product?._id || null,
+        title: p.product?.title || p.product?.name || null,
+        slug: p.product?.slug || null,
+      },
+      // ✅ Per-product refund info from SellerSettlement
+      refundStatus: productRefundInfo.refundStatus,
+      refundAmount: productRefundInfo.refundAmount,
+      refundRequestedAt: productRefundInfo.refundRequestedAt,
+      refundedAt: productRefundInfo.refundedAt,
+      refundReason: productRefundInfo.refundReason,
+    };
+  });
 
   const totalItems = order.products.reduce((sum, p) => sum + p.quantity, 0);
+
+  // ✅ Calculate per-seller refund status for customer view
+  const sellerRefundStatuses = {};
+  for (const sellerId of Object.keys(settlementMap)) {
+    sellerRefundStatuses[sellerId] = settlementMap[sellerId].refundStatus;
+  }
 
   const formattedOrder = {
     _id: order._id,
@@ -135,6 +259,23 @@ export const getOrderByOrderId = catchAsync(async (req, res, next) => {
     shippingAddress: order.shippingAddress,
     createdAt: order.createdAt,
     updatedAt: order.updatedAt,
+    // ✅ Refund related data
+    refundAmount: order.refundAmount || 0,
+    refundedAt: order.refundedAt || null,
+    refundReason: order.refundReason || null,
+    refundRequestedAt: order.refundRequestedAt || null,
+    refundRejectReason: order.refundRejectReason || null,
+    platformFeeAmount: order.platformFeeAmount || 0,
+    platformFeeRefunded: order.platformFeeRefunded || 0,
+    // ✅ Per-seller refund status
+    sellerRefundStatuses,
+    // ✅ Dispute related data
+    disputeId: order.disputeId || null,
+    disputeStatus: order.disputeStatus || null,
+    disputeReason: order.disputeReason || null,
+    disputeAmount: order.disputeAmount || 0,
+    disputeCreatedAt: order.disputeCreatedAt || null,
+    disputeClosedAt: order.disputeClosedAt || null,
   };
 
   res.status(200).json({
@@ -185,26 +326,88 @@ export const getOrderHistory = catchAsync(async (req, res, next) => {
     })
     .lean();
 
+  // ✅ Fetch all SellerSettlements for these orders to get per-product refund status
+  const purchaseIds = orders.map(o => o._id);
+  const settlements = await SellerSettlement.find({
+    purchaseId: { $in: purchaseIds }
+  }).lean();
+
+  // ✅ Create a map: purchaseId -> sellerId -> products with refund info
+  const settlementMap = {};
+  for (const settlement of settlements) {
+    const purchaseIdStr = String(settlement.purchaseId);
+    const sellerIdStr = String(settlement.sellerId);
+    
+    if (!settlementMap[purchaseIdStr]) {
+      settlementMap[purchaseIdStr] = {};
+    }
+    
+    // Map each product's refund status
+    const productRefundMap = {};
+    for (const p of settlement.products) {
+      productRefundMap[String(p.product)] = {
+        refundStatus: p.refundStatus || "none",
+        refundAmount: p.refundAmount || 0,
+        refundRequestedAt: p.refundRequestedAt || null,
+        refundedAt: p.refundedAt || null,
+        refundReason: p.refundReason || null,
+      };
+    }
+    
+    settlementMap[purchaseIdStr][sellerIdStr] = {
+      refundStatus: settlement.refundStatus || "none",
+      refundDeductions: settlement.refundDeductions || 0,
+      products: productRefundMap,
+    };
+  }
+
   // 🔹 Response পরিষ্কারভাবে সাজানো হচ্ছে
   const formattedOrders = orders.map((order) => {
-    const products = order.products.map((p) => ({
-      _id: p._id,
-      quantity: p.quantity,
-      price: p.price,
-      seller: p.seller,
-      product: {
-        _id: p.product?._id || null,
-        title: p.product?.title || null,
-        slug: p.product?.slug || null,
-      },
-    }));
+    const purchaseIdStr = String(order._id);
+    const orderSettlements = settlementMap[purchaseIdStr] || {};
+
+    const products = order.products.map((p) => {
+      const sellerIdStr = String(p.seller);
+      const sellerSettlement = orderSettlements[sellerIdStr];
+      const productRefundInfo = sellerSettlement?.products?.[String(p.product)] || {
+        refundStatus: "none",
+        refundAmount: 0,
+        refundRequestedAt: null,
+        refundedAt: null,
+        refundReason: null,
+      };
+
+      return {
+        _id: p._id,
+        quantity: p.quantity,
+        price: p.price,
+        seller: p.seller,
+        product: {
+          _id: p.product?._id || null,
+          title: p.product?.title || null,
+          slug: p.product?.slug || null,
+        },
+        // ✅ Per-product refund info from SellerSettlement
+        refundStatus: productRefundInfo.refundStatus,
+        refundAmount: productRefundInfo.refundAmount,
+        refundRequestedAt: productRefundInfo.refundRequestedAt,
+        refundedAt: productRefundInfo.refundedAt,
+        refundReason: productRefundInfo.refundReason,
+      };
+    });
 
     const totalItems = order.products.reduce((sum, p) => sum + p.quantity, 0);
+
+    // ✅ Calculate per-seller refund status for customer view
+    const sellerRefundStatuses = {};
+    for (const sellerId of Object.keys(orderSettlements)) {
+      sellerRefundStatuses[sellerId] = orderSettlements[sellerId].refundStatus;
+    }
 
     return {
       _id: order._id,
       orderId: order.orderId,
-      trackingNumber: order.trackingNumber, // ✅ tracking number থাকবে
+      trackingNumber: order.trackingNumber,
       totalItems,
       products,
       totalAmount: order.totalAmount,
@@ -212,7 +415,23 @@ export const getOrderHistory = catchAsync(async (req, res, next) => {
       status: order.status,
       createdAt: order.createdAt,
       updatedAt: order.updatedAt,
-      // 🚫 shippingAddress বাদ দিলাম
+      // ✅ Refund related data (order level)
+      refundAmount: order.refundAmount || 0,
+      refundedAt: order.refundedAt || null,
+      refundReason: order.refundReason || null,
+      refundRequestedAt: order.refundRequestedAt || null,
+      refundRejectReason: order.refundRejectReason || null,
+      platformFeeAmount: order.platformFeeAmount || 0,
+      platformFeeRefunded: order.platformFeeRefunded || 0,
+      // ✅ Per-seller refund status
+      sellerRefundStatuses,
+      // ✅ Dispute related data
+      disputeId: order.disputeId || null,
+      disputeStatus: order.disputeStatus || null,
+      disputeReason: order.disputeReason || null,
+      disputeAmount: order.disputeAmount || 0,
+      disputeCreatedAt: order.disputeCreatedAt || null,
+      disputeClosedAt: order.disputeClosedAt || null,
     };
   });
 

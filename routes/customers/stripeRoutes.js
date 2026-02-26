@@ -5,6 +5,9 @@ import { protect } from "../../controllers/authController.js";
 const router = express.Router();
 router.use(protect);
 
+// get checkout breakdown
+router.post("/get-checkout-breakdown", stripeController.getCheckoutBreakdown);
+
 // create paymentIntent (custom form)
 router.post("/create-payment-intent", stripeController.createPaymentIntent);
 

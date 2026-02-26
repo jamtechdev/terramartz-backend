@@ -21,16 +21,18 @@ const promoCodeSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
-    sellerId: { type: String, ref: "User", required: true, index: true },
-    usageLimit: {  // Maximum total uses
+    usageLimit: {
+      // Maximum total uses
       type: Number,
-      default: null,  // null = unlimited
+      default: null, // null = unlimited
     },
-    perUserLimit: {  // Maximum uses per user
+    perUserLimit: {
+      // Maximum uses per user
       type: Number,
-      default: 1,  // Default: each user can use once
+      default: 1, // Default: each user can use once
     },
-    usedCount: {  // Total times used
+    usedCount: {
+      // Total times used
       type: Number,
       default: 0,
     },

@@ -19,6 +19,34 @@ const sellerSettlementSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    // Products that belong to this seller in this order
+    products: [
+      {
+        product: { type: String, ref: "Product" },
+        quantity: { type: Number },
+        price: { type: Number },
+        // Per-product refund tracking within this settlement
+        refundStatus: {
+          type: String,
+          enum: ["none", "requested", "approved", "rejected", "refunded"],
+          default: "none",
+        },
+        refundAmount: {
+          type: Number,
+          default: 0,
+        },
+        refundRequestedAt: {
+          type: Date,
+        },
+        refundReason: {
+          type: String,
+          default: null,
+        },
+        refundedAt: {
+          type: Date,
+        },
+      },
+    ],
     totalOrderAmount: {
       type: Number,
       required: true,
@@ -34,6 +62,12 @@ const sellerSettlementSchema = new mongoose.Schema(
     refundDeductions: {
       type: Number,
       default: 0,
+    },
+    // Overall settlement refund status (derived from products)
+    refundStatus: {
+      type: String,
+      enum: ["none", "partial", "full"],
+      default: "none",
     },
     status: {
       type: String,

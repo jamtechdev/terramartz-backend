@@ -24,26 +24,94 @@ function generateUniqueOrderId() {
   return `ORD-${timestamp}-${randomBytes}`;
 }
 
-// ✅ Create PaymentIntent
-export const createPaymentIntent = catchAsync(async (req, res, next) => {
-  const { products, shippingAddress, promoCode, skipWebhook } = req.body;
+/**
+ * Helper to calculate overall order payment status based on all settlements
+ * @param {string} purchaseId - The purchase/order ID
+ * @returns {Object} - { paymentStatus, totalRefundAmount, refundAmountBySeller }
+ */
+export const calculateOrderPaymentStatus = async (purchaseId) => {
+  const settlements = await SellerSettlement.find({ purchaseId });
 
+  if (!settlements || settlements.length === 0) {
+    return { paymentStatus: "paid", totalRefundAmount: 0, refundAmountBySeller: {} };
+  }
+
+  let totalRefundAmount = 0;
+  const refundAmountBySeller = {};
+  let totalProducts = 0;
+  let refundedProducts = 0;
+
+  for (const settlement of settlements) {
+    for (const product of settlement.products) {
+      totalProducts++;
+      if (product.refundStatus === "refunded") {
+        refundedProducts++;
+        totalRefundAmount += product.refundAmount || 0;
+        const sellerId = String(settlement.sellerId);
+        refundAmountBySeller[sellerId] = (refundAmountBySeller[sellerId] || 0) + (product.refundAmount || 0);
+      }
+    }
+  }
+
+  let paymentStatus = "paid";
+  if (refundedProducts > 0) {
+    paymentStatus = refundedProducts === totalProducts ? "refunded" : "partially_refunded";
+  }
+
+  return { paymentStatus, totalRefundAmount, refundAmountBySeller };
+};
+
+/**
+ * Helper to update purchase payment status based on all settlements
+ * @param {string} purchaseId - The purchase/order ID
+ */
+export const updatePurchasePaymentStatus = async (purchaseId) => {
+  const { paymentStatus, totalRefundAmount } = await calculateOrderPaymentStatus(purchaseId);
+  
+  const purchase = await Purchase.findById(purchaseId);
+  if (purchase) {
+    purchase.paymentStatus = paymentStatus;
+    purchase.refundAmount = totalRefundAmount;
+    await purchase.save();
+  }
+  
+  return { paymentStatus, totalRefundAmount };
+};
+
+/**
+ * Shared helper to calculate full checkout breakdown from database authoritative data.
+ * @param {Array} products - Array of { product: id, quantity }
+ * @param {string} shippingMethod - "standard", "express", or "overnight"
+ * @param {string} promoCode - Applied promo code string
+ * @param {Object} user - Authenticated user object
+ */
+export const calculateOrderBreakdown = async (
+  products,
+  shippingMethod,
+  promoCode,
+  user,
+) => {
   if (!products || products.length === 0)
-    return next(new AppError("No products provided", 400));
-  if (!req.user || !req.user.id)
-    return next(new AppError("User not authenticated", 401));
+    throw new Error("No products provided");
 
-  let sellerId = null;
   const productDetailsArr = [];
+  let totalSavings = 0;
 
-  // 💡 Step 1: fetch products & calculate basePrice (product-level discount)
+  // 1. Fetch products and calculate subtotal (using DB prices)
+  // Track all unique seller IDs for multi-seller settlement
+  const sellerIdsSet = new Set();
+
   for (const item of products) {
     const product = await Product.findById(item.product);
-    if (!product) return next(new AppError("Product not found", 404));
+    if (!product) throw new Error(`Product not found: ${item.product}`);
 
-    if (!sellerId) sellerId = product.createdBy;
+    const productSellerId = String(product.createdBy);
+    sellerIdsSet.add(productSellerId);
 
     let basePrice = Number(product.price);
+    const originalPrice = Number(product.originalPrice || product.price);
+
+    // Apply product-level discount if applicable
     if (
       product.discount &&
       (!product.discountExpires ||
@@ -52,68 +120,110 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
       if (product.discountType === "fixed") basePrice -= product.discount;
       else if (product.discountType === "percentage")
         basePrice -= (basePrice * product.discount) / 100;
-
       if (basePrice < 0) basePrice = 0;
     }
+
+    const quantity = Number(item.quantity) || 1;
+
+    // ✅ Stock Validation
+    if (product.stockQuantity < quantity) {
+      throw new Error(
+        `Insufficient stock for "${product.title}". Only ${product.stockQuantity} available.`,
+      );
+    }
+
+    totalSavings += (originalPrice - basePrice) * quantity;
 
     productDetailsArr.push({
       product,
       basePrice,
-      quantity: item.quantity,
+      quantity,
+      sellerId: productSellerId,
     });
   }
 
-  // 💡 Step 2: Calculate subtotal
+  const sellerIds = [...sellerIdsSet];
+  // Use first seller for shipping config (backward compatible)
+  const sellerId = sellerIds[0];
+
   const subtotal = productDetailsArr.reduce(
     (sum, p) => sum + p.basePrice * p.quantity,
     0,
   );
 
   const seller = await User.findById(sellerId);
-  if (!seller) return next(new AppError("Seller not found", 404));
+  if (!seller) throw new Error("Seller not found");
 
-  // 💡 Step 3: Shipping
-  let shippingCost = seller.sellerProfile.shippingCharges || 0;
-  if (
-    seller.sellerProfile.freeShippingThreshold &&
-    subtotal >= seller.sellerProfile.freeShippingThreshold
-  )
-    shippingCost = 0;
+  // 2. Shipping Calculation
+  let shippingCost = 0;
+  if (shippingMethod === "express") {
+    shippingCost = 12.99;
+  } else if (shippingMethod === "overnight") {
+    shippingCost = 24.99;
+  } else {
+    // Standard shipping
+    if (subtotal > 50) {
+      shippingCost = 0;
+    } else if (
+      seller.sellerProfile.freeShippingThreshold &&
+      subtotal >= seller.sellerProfile.freeShippingThreshold
+    ) {
+      shippingCost = 0;
+    } else {
+      shippingCost = seller.sellerProfile.shippingCharges || 5.99;
+    }
+  }
 
-  // 💡 Step 4: Promo code discount (using new PromoCode model)
+  // 3. Promo Code Calculation
   let promoDiscount = 0;
   let promoCodeId = null;
 
   if (promoCode) {
-    try {
-      // Find promo code in the new PromoCode collection
-      const matchedPromo = await PromoCode.findOne({
-        code: promoCode,
-        sellerId: sellerId,
-        isActive: true,
+    // 💡 Search for the promo code globally first to identify its owner
+    const matchedPromo = await PromoCode.findOne({
+      code: promoCode.trim(),
+      isActive: true,
+    });
+
+    if (matchedPromo) {
+      // ✅ Check if ALL products in the cart belong to this promo code's seller
+      // Use String conversion for reliable comparison
+      const promoSellerIdStr = matchedPromo.sellerId.toString();
+
+      console.log(
+        `🔍 [calculateOrderBreakdown] Checking products for promo owner: ${promoSellerIdStr}`,
+      );
+
+      const allProductsFromPromoSeller = productDetailsArr.every((p, idx) => {
+        const prodSellerId =
+          p.product.createdBy?.toString() || p.product.seller?.toString();
+        const matches = prodSellerId === promoSellerIdStr;
+        console.log(
+          `   - Product [${idx}] ID: ${p.product._id}, createdBy: ${prodSellerId}, Matches: ${matches}`,
+        );
+        return matches;
       });
 
-      if (matchedPromo) {
+      if (!allProductsFromPromoSeller) {
+        // If products are from different sellers, this specific seller coupon cannot be applied
+        console.log(
+          `🚫 Promo code ${promoCode} rejected: Not all products belong to seller ${promoSellerIdStr}`,
+        );
+      } else {
         const now = new Date();
-
-        // Check expiration
         const notExpired =
           !matchedPromo.expiresAt || new Date(matchedPromo.expiresAt) >= now;
-
-        // Check minimum order amount
         const meetsMinAmount = subtotal >= (matchedPromo.minOrderAmount || 0);
-
-        // Check total usage limit
         const withinUsageLimit =
           !matchedPromo.usageLimit ||
           matchedPromo.usedCount < matchedPromo.usageLimit;
 
-        // Check per-user limit (if user is authenticated)
         let withinUserLimit = true;
-        if (req.user && req.user.id) {
+        if (user && user.id) {
           const userUsageCount = await CustomerPromoCodeUse.countDocuments({
-            user_id: req.user.id,
+            user_id: user.id,
             promoCodeId: matchedPromo._id,
+            purchase_id: { $ne: null },
           });
           withinUserLimit = userUsageCount < (matchedPromo.perUserLimit || 1);
         }
@@ -124,35 +234,20 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
           withinUsageLimit &&
           withinUserLimit
         ) {
-          // Calculate discount
           promoDiscount =
             matchedPromo.type === "fixed"
               ? matchedPromo.discount
               : (subtotal * matchedPromo.discount) / 100;
-
           promoCodeId = matchedPromo._id;
-
-          console.log(
-            `✅ Valid promo code applied: ${promoCode}, Discount: $${promoDiscount.toFixed(2)}`,
-          );
-        } else {
-          console.log(`⚠️ Promo code validation failed:`);
-          console.log(`   - Expired: ${!notExpired}`);
-          console.log(`   - Min amount met: ${meetsMinAmount}`);
-          console.log(`   - Within usage limit: ${withinUsageLimit}`);
-          console.log(`   - Within user limit: ${withinUserLimit}`);
         }
-      } else {
-        console.log(`⚠️ Promo code not found or inactive: ${promoCode}`);
       }
-    } catch (error) {
-      console.error("❌ Error validating promo code:", error);
-      // Continue without promo code if validation fails
     }
   }
 
-  // 💡 Step 5: Limited Time Offer (admin)
-  const activeTax = await TaxConfig.findOne({ active: true });
+  // 4. Admin Discount (Limited Time Offer)
+  const activeTax =
+    (await TaxConfig.findOne({ isActive: true })) ||
+    (await TaxConfig.findOne({ active: true }));
   let adminDiscount = 0;
   if (activeTax && activeTax.limitedTimeOffer?.active) {
     const offer = activeTax.limitedTimeOffer;
@@ -165,171 +260,263 @@ export const createPaymentIntent = catchAsync(async (req, res, next) => {
 
   const totalDiscount = promoDiscount + adminDiscount;
 
-  // 💡 Step 6: Proportional discount per product + rounding
-  const totalBasePrice = productDetailsArr.reduce(
-    (sum, p) => sum + p.basePrice * p.quantity,
-    0,
-  );
+  // 5. Proportional discounting and final totals
+  const totalAfterDiscount = Math.max(0, subtotal - totalDiscount);
 
+  // Set finalPricePerUnit on each item for metadata/line items
   productDetailsArr.forEach((p) => {
-    const proportion = (p.basePrice * p.quantity) / totalBasePrice;
-    const discountShare = totalDiscount * proportion;
-    const finalUnitPrice = p.basePrice - discountShare / p.quantity;
-    p.finalPricePerUnit = Math.round(finalUnitPrice * 100) / 100; // 2 decimals
+    if (subtotal > 0) {
+      const proportion = (p.basePrice * p.quantity) / subtotal;
+      const discountShare = totalDiscount * proportion;
+      const finalUnitPrice = p.basePrice - discountShare / p.quantity;
+      p.finalPricePerUnit = Math.round(finalUnitPrice * 100) / 100;
+    } else {
+      p.finalPricePerUnit = 0;
+    }
   });
 
-  // 💡 Step 7: Recalculate total after discounts
-  const totalAfterDiscount = productDetailsArr.reduce(
-    (sum, p) => sum + p.finalPricePerUnit * p.quantity,
-    0,
-  );
+  // 6. Tax Calculation
+  let taxRate = 0.08;
+  if (activeTax && activeTax.rate) taxRate = activeTax.rate / 100;
+  const taxAmount = Math.round(totalAfterDiscount * taxRate * 100) / 100;
 
-  // 💡 Step 8: Tax calculation
-  let taxAmount = 0;
-  if (activeTax)
-    taxAmount = (totalAfterDiscount + shippingCost) * (activeTax.rate / 100);
-  taxAmount = Math.round(taxAmount * 100) / 100;
-
-  // 💡 Step 9: Total amount
+  // 7. Total Amount
   const totalAmount =
     Math.round((totalAfterDiscount + shippingCost + taxAmount) * 100) / 100;
 
-  // ✅ Step 10: Check if seller has connected Stripe account
+  // 8. Platform Fee
+  const platformFeeConfig = await PlatformFee.findOne();
+  let platformFeeAmount = 0;
   const hasStripeConnect =
     seller.sellerProfile?.stripeAccountId &&
     seller.sellerProfile?.stripeAccountStatus === "active";
 
-  // ✅ Step 10.5: Fetch and calculate platform fee
-  const platformFeeConfig = await PlatformFee.findOne();
-  let platformFeeAmount = 0;
-
-  if (platformFeeConfig && hasStripeConnect) {
+  if (platformFeeConfig) {
     if (platformFeeConfig.type === "fixed") {
       platformFeeAmount = platformFeeConfig.fee;
     } else if (platformFeeConfig.type === "percentage") {
-      // Calculate percentage of total amount
       platformFeeAmount = (totalAmount * platformFeeConfig.fee) / 100;
     }
-    // Round to 2 decimals
     platformFeeAmount = Math.round(platformFeeAmount * 100) / 100;
-
-    console.log(
-      `💰 Platform fee calculated: $${platformFeeAmount.toFixed(2)} (${platformFeeConfig.type})`,
-    );
   }
 
-  // ✅ Step 11: Create Stripe PaymentIntent
-  const paymentIntentConfig = {
-    amount: Math.round(totalAmount * 100),
-    currency: "usd",
-    metadata: {
-      buyer: req.user.id,
-      sellerId: sellerId,
-      products: JSON.stringify(
-        productDetailsArr.map((p) => ({
-          product: p.product._id,
-          quantity: p.quantity,
-          price: p.finalPricePerUnit, // ✅ per-unit paid price
-        })),
-      ),
-      shippingAddress: JSON.stringify(shippingAddress),
-      promoDiscount: promoDiscount.toString(),
-      adminDiscount: adminDiscount.toString(),
-      taxAmount: taxAmount.toString(),
-      shippingCost: shippingCost.toString(),
-      platformFeeAmount: platformFeeAmount.toString(), // ✅ Store for refund/chargeback handling
-      platformFeeType: platformFeeConfig?.type || "none", // ✅ Store fee type
-      paymentType: hasStripeConnect ? "direct_charge" : "platform",
-      promoCodeId: promoCodeId || "",
-    },
-  };
+  // 9. Compute per-seller breakdown for settlements
+  const sellerBreakdowns = {};
+  for (const sId of sellerIds) {
+    const sellerProducts = productDetailsArr.filter((p) => p.sellerId === sId);
+    const sellerSubtotal = sellerProducts.reduce(
+      (sum, p) => sum + p.basePrice * p.quantity,
+      0,
+    );
+    const proportion = subtotal > 0 ? sellerSubtotal / subtotal : 0;
+    const sellerPlatformFee =
+      Math.round(platformFeeAmount * proportion * 100) / 100;
+    const sellerCommission =
+      Math.round((sellerSubtotal - sellerPlatformFee) * 100) / 100;
 
-  // ✅ Settlement logic changed: We now hold the commission and settle every Wednesday.
-  // Immediate transfer to seller is disabled.
-  /*
-  if (hasStripeConnect) {
-    paymentIntentConfig.transfer_data = {
-      destination: seller.sellerProfile.stripeAccountId,
+    sellerBreakdowns[sId] = {
+      sellerId: sId,
+      subtotal: Math.round(sellerSubtotal * 100) / 100,
+      platformFee: sellerPlatformFee,
+      commission: sellerCommission,
+    };
+  }
+
+  return {
+    subtotal: Math.round(subtotal * 100) / 100,
+    promoDiscount: Math.round(promoDiscount * 100) / 100,
+    adminDiscount: Math.round(adminDiscount * 100) / 100,
+    shippingCost: Math.round(shippingCost * 100) / 100,
+    taxAmount,
+    totalAmount,
+    totalSavings: Math.round(totalSavings * 100) / 100,
+    platformFeeAmount,
+    sellerReceives: Math.round((totalAmount - platformFeeAmount) * 100) / 100,
+    promoCodeId,
+    sellerId,
+    sellerIds, // all unique seller IDs for multi-seller orders
+    sellerBreakdowns, // per-seller breakdown for settlements
+    productDetailsArr,
+    hasStripeConnect,
+    platformFeeConfig,
+    activeTax,
+  };
+};
+
+// ✅ Get Checkout Breakdown (for frontend preview)
+export const getCheckoutBreakdown = catchAsync(async (req, res, next) => {
+  const { products, shippingMethod, promoCode } = req.body;
+
+  try {
+    const breakdown = await calculateOrderBreakdown(
+      products,
+      shippingMethod,
+      promoCode,
+      req.user,
+    );
+
+    res.status(200).json({
+      status: "success",
+      data: breakdown,
+    });
+  } catch (error) {
+    return next(new AppError(error.message, 400));
+  }
+});
+
+// ✅ Create PaymentIntent
+export const createPaymentIntent = catchAsync(async (req, res, next) => {
+  const { products, shippingAddress, promoCode, skipWebhook, shippingMethod } =
+    req.body;
+
+  if (!products || products.length === 0)
+    return next(new AppError("No products provided", 400));
+  if (!req.user || !req.user.id)
+    return next(new AppError("User not authenticated", 401));
+
+  try {
+    const breakdown = await calculateOrderBreakdown(
+      products,
+      shippingMethod,
+      promoCode,
+      req.user,
+    );
+
+    const {
+      subtotal,
+      promoDiscount,
+      adminDiscount,
+      shippingCost,
+      taxAmount,
+      totalAmount,
+      platformFeeAmount,
+      promoCodeId,
+      sellerId,
+      sellerIds,
+      productDetailsArr,
+      hasStripeConnect,
+      platformFeeConfig,
+    } = breakdown;
+
+    // ✅ Step 11: Create Stripe PaymentIntent
+    const paymentIntentConfig = {
+      amount: Math.round(totalAmount * 100),
+      currency: "usd",
+      metadata: {
+        buyer: req.user.id,
+        sellerId: String(sellerId),
+        sellerIds: JSON.stringify(sellerIds),
+        products: JSON.stringify(
+          productDetailsArr.map((p) => ({
+            product: String(p.product._id),
+            quantity: p.quantity,
+            price: p.finalPricePerUnit, // ✅ per-unit paid price
+          })),
+        ),
+        shippingAddress: JSON.stringify(shippingAddress),
+        shippingMethod: shippingMethod || "standard",
+        promoDiscount: promoDiscount.toString(),
+        adminDiscount: adminDiscount.toString(),
+        taxAmount: taxAmount.toString(),
+        shippingCost: shippingCost.toString(),
+        platformFeeAmount: platformFeeAmount.toString(),
+        platformFeeType: platformFeeConfig?.type || "none",
+        paymentType: hasStripeConnect ? "direct_charge" : "platform",
+        promoCodeId: promoCodeId || "",
+      },
     };
 
-    if (platformFeeAmount > 0) {
-      paymentIntentConfig.application_fee_amount = Math.round(
-        platformFeeAmount * 100,
-      );
-    }
-  }
-  */
-
-  const paymentIntent = await stripe.paymentIntents.create(paymentIntentConfig);
-
-  // 🔹 Local Development: Skip webhook and directly create purchase
-  const isDevelopment = process.env.NODE_ENV === "development";
-  const shouldSkipWebhook = skipWebhook === true || isDevelopment;
-
-  if (shouldSkipWebhook) {
-    try {
-      const mockPaymentIntent = {
-        id: paymentIntent.id,
-        amount: paymentIntent.amount,
-        metadata: paymentIntent.metadata,
+    // ✅ Settlement logic changed: We now hold the commission and settle every Wednesday.
+    // Immediate transfer to seller is disabled.
+    /*
+    if (hasStripeConnect) {
+      paymentIntentConfig.transfer_data = {
+        destination: seller.sellerProfile.stripeAccountId,
       };
-
-      await createPurchaseFromPaymentIntent(mockPaymentIntent);
-
-      const createdPurchase = await Purchase.findOne({
-        paymentIntentId: paymentIntent.id,
-      });
-
-      return res.status(200).json({
-        status: "success",
-        clientSecret: paymentIntent.client_secret,
-        breakdown: {
-          subtotal: Math.round(subtotal * 100) / 100,
-          promoDiscount: Math.round(promoDiscount * 100) / 100,
-          adminDiscount: Math.round(adminDiscount * 100) / 100,
-          shippingCost: Math.round(shippingCost * 100) / 100,
-          taxAmount: Math.round(taxAmount * 100) / 100,
-          platformFee: Math.round(platformFeeAmount * 100) / 100, // ✅ Include platform fee
-          totalAmount: Math.round(totalAmount * 100) / 100,
-          sellerReceives:
-            Math.round((totalAmount - platformFeeAmount) * 100) / 100, // ✅ What seller gets
-        },
-        message: "Payment completed (webhook skipped for local development)",
-        orderCreated: true,
-        orderId: createdPurchase?.orderId || null,
-        paymentIntentId: paymentIntent.id,
-      });
-    } catch (err) {
-      console.error("⚠️ Failed to create purchase directly:", err);
+  
+      if (platformFeeAmount > 0) {
+        paymentIntentConfig.application_fee_amount = Math.round(
+          platformFeeAmount * 100,
+        );
+      }
     }
-  }
+    */
 
-  res.status(200).json({
-    status: "success",
-    clientSecret: paymentIntent.client_secret,
-    breakdown: {
-      subtotal: Math.round(subtotal * 100) / 100,
-      promoDiscount: Math.round(promoDiscount * 100) / 100,
-      adminDiscount: Math.round(adminDiscount * 100) / 100,
-      shippingCost: Math.round(shippingCost * 100) / 100,
-      taxAmount: Math.round(taxAmount * 100) / 100,
-      platformFee: Math.round(platformFeeAmount * 100) / 100, // ✅ Include platform fee
-      totalAmount: Math.round(totalAmount * 100) / 100,
-      sellerReceives: Math.round((totalAmount - platformFeeAmount) * 100) / 100, // ✅ What seller gets
-    },
-  });
+    const paymentIntent =
+      await stripe.paymentIntents.create(paymentIntentConfig);
+
+    // 🔹 Local Development: Skip webhook and directly create purchase
+    const isDevelopment = process.env.NODE_ENV === "development";
+    const shouldSkipWebhook = skipWebhook === true || isDevelopment;
+
+    if (shouldSkipWebhook) {
+      try {
+        const mockPaymentIntent = {
+          id: paymentIntent.id,
+          amount: paymentIntent.amount,
+          metadata: paymentIntent.metadata,
+        };
+
+        await createPurchaseFromPaymentIntent(mockPaymentIntent);
+
+        const createdPurchase = await Purchase.findOne({
+          paymentIntentId: paymentIntent.id,
+        });
+
+        return res.status(200).json({
+          status: "success",
+          clientSecret: paymentIntent.client_secret,
+          breakdown: {
+            subtotal: Math.round(subtotal * 100) / 100,
+            promoDiscount: Math.round(promoDiscount * 100) / 100,
+            adminDiscount: Math.round(adminDiscount * 100) / 100,
+            shippingCost: Math.round(shippingCost * 100) / 100,
+            taxAmount: Math.round(taxAmount * 100) / 100,
+            platformFee: Math.round(platformFeeAmount * 100) / 100, // ✅ Include platform fee
+            totalAmount: Math.round(totalAmount * 100) / 100,
+            sellerReceives:
+              Math.round((totalAmount - platformFeeAmount) * 100) / 100, // ✅ What seller gets
+          },
+          message: "Payment completed (webhook skipped for local development)",
+          orderCreated: true,
+          orderId: createdPurchase?.orderId || null,
+          paymentIntentId: paymentIntent.id,
+        });
+      } catch (err) {
+        console.error("⚠️ Failed to create purchase directly:", err);
+      }
+    }
+
+    res.status(200).json({
+      status: "success",
+      clientSecret: paymentIntent.client_secret,
+      breakdown: {
+        subtotal: Math.round(subtotal * 100) / 100,
+        promoDiscount: Math.round(promoDiscount * 100) / 100,
+        adminDiscount: Math.round(adminDiscount * 100) / 100,
+        shippingCost: Math.round(shippingCost * 100) / 100,
+        taxAmount: Math.round(taxAmount * 100) / 100,
+        platformFee: Math.round(platformFeeAmount * 100) / 100,
+        totalAmount: Math.round(totalAmount * 100) / 100,
+        sellerReceives: breakdown.sellerReceives,
+      },
+      paymentIntentId: paymentIntent.id,
+    });
+  } catch (error) {
+    return next(new AppError(error.message, 400));
+  }
 });
 
 // ✅ Webhook + retry logic + atomic stock update
 export const webhookPayment = async (req, res, next) => {
-  // 🔹 Skip webhook in development mode (local testing)
-  if (process.env.NODE_ENV === "development") {
-    console.log("⚠️ Webhook skipped in development mode");
-    return res.status(200).json({
-      received: true,
-      message: "Webhook skipped in development mode",
-    });
-  }
+  // // 🔹 Skip webhook in development mode (local testing)
+  // if (process.env.NODE_ENV === "development") {
+  //   console.log("⚠️ Webhook skipped in development mode");
+  //   return res.status(200).json({
+  //     received: true,
+  //     message: "Webhook skipped in development mode",
+  //   });
+  // }
 
   const signature = req.headers["stripe-signature"];
   let event;
@@ -469,29 +656,55 @@ export const webhookPayment = async (req, res, next) => {
         ],
       });
 
-      // ✅ Create SellerSettlement record
-      const commissionAmount = totalAmount - platformFeeAmount;
-
+      // ✅ Create SellerSettlement records for ALL sellers in this order
       const orderDate = new Date();
       const maturityDate = new Date(orderDate);
       maturityDate.setDate(maturityDate.getDate() + 3); // 3 Days Buffer
       const scheduledSettlementDate = calculateSettlementDate(maturityDate);
 
-      // Get seller from first product
-      const sellerId = purchaseProducts[0]?.seller;
+      // Group products by seller to create per-seller settlement records
+      const sellerProductsMap = {};
+      for (const pp of purchaseProducts) {
+        const sId = String(pp.seller);
+        if (!sellerProductsMap[sId]) sellerProductsMap[sId] = [];
+        sellerProductsMap[sId].push(pp);
+      }
 
-      if (sellerId) {
+      const orderSubtotal = purchaseProducts.reduce(
+        (sum, pp) => sum + pp.price * pp.quantity,
+        0,
+      );
+
+      for (const sId of Object.keys(sellerProductsMap)) {
+        const sellerItems = sellerProductsMap[sId];
+        const sellerSubtotal = sellerItems.reduce(
+          (sum, pp) => sum + pp.price * pp.quantity,
+          0,
+        );
+        // Proportional platform fee based on seller's share of the order
+        const proportion =
+          orderSubtotal > 0 ? sellerSubtotal / orderSubtotal : 0;
+        const sellerPlatformFee =
+          Math.round(platformFeeAmount * proportion * 100) / 100;
+        const sellerCommission =
+          Math.round((sellerSubtotal - sellerPlatformFee) * 100) / 100;
+
         await SellerSettlement.create({
-          sellerId,
+          sellerId: sId,
           purchaseId: purchase._id,
-          totalOrderAmount: totalAmount,
-          commissionAmount: commissionAmount,
-          platformFee: platformFeeAmount,
+          products: sellerItems.map((pp) => ({
+            product: String(pp.product),
+            quantity: pp.quantity,
+            price: pp.price,
+          })),
+          totalOrderAmount: sellerSubtotal,
+          commissionAmount: sellerCommission,
+          platformFee: sellerPlatformFee,
           status: "pending",
           scheduledSettlementDate,
         });
         console.log(
-          `✅ SellerSettlement created for seller ${sellerId}, scheduled for ${scheduledSettlementDate}`,
+          `✅ SellerSettlement created for seller ${sId} ($${sellerCommission}), scheduled for ${scheduledSettlementDate}`,
         );
       }
 
@@ -605,539 +818,264 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
     );
   });
   console.log(`=============================================\n`);
-
-  let sellerId = null;
   const lineItems = [];
-
-  // Initialize promo code variables
-  let promoDiscount = 0;
-  let promoCodeId = null;
-
-  // 💡 Step 1: Fetch products & collect for later processing
-  const productDataList = [];
-  for (const item of products) {
-    const product = await Product.findById(item.product);
-    if (!product) return next(new AppError("Product not found", 404));
-
-    if (!sellerId) sellerId = product.createdBy;
-
-    // ALWAYS use price from request (from cart) - this ensures frontend and backend match
-    let basePrice = item.price ? Number(item.price) : Number(product.price);
-
-    // If price from cart is provided, use it directly (cart already has correct discounted price)
-    if (item.price) {
-      basePrice = Number(item.price);
-      console.log(
-        `Using price from cart for product ${product._id}: $${basePrice} (DB price: $${product.price})`,
-      );
-    } else {
-      // Fallback: calculate from product if price not provided
-      console.log(
-        `Price not provided from cart for product ${product._id}, using DB price: $${product.price}`,
-      );
-      basePrice = Number(product.price);
-
-      // Apply discount if needed
-      if (
-        product.discount &&
-        (!product.discountExpires ||
-          new Date(product.discountExpires) >= new Date())
-      ) {
-        if (product.discountType === "fixed") basePrice -= product.discount;
-        else if (product.discountType === "percentage")
-          basePrice -= (basePrice * product.discount) / 100;
-
-        if (basePrice < 0) basePrice = 0;
-      }
-    }
-
-    // Ensure price is valid
-    if (!basePrice || basePrice <= 0) {
-      console.warn(
-        `Invalid price for product ${product._id}, using DB price as fallback`,
-      );
-      basePrice = Number(product.price) || 0;
-    }
-
-    productDataList.push({
-      product,
-      basePrice,
-      quantity: item.quantity,
-      originalItem: item,
-    });
-  }
-
-  // Calculate subtotal for promo code validation
-  const productsSubtotal = productDataList.reduce(
-    (sum, pData) => sum + pData.basePrice * pData.quantity,
-    0,
-  );
-
-  const seller = await User.findById(sellerId);
-  if (!seller) return next(new AppError("Seller not found", 404));
-
-  // 💡 Promo code validation (using new PromoCode model) - added after sellerId and subtotal are established
-  // Variables promoDiscount and promoCodeId already declared earlier in function
-
-  if (promoCode && sellerId) {
-    // Only validate if we have a seller
-    try {
-      // Find promo code in the new PromoCode collection
-      const matchedPromo = await PromoCode.findOne({
-        code: promoCode,
-        sellerId: sellerId, // Match promo code to seller
-        isActive: true,
-      });
-
-      if (matchedPromo) {
-        const now = new Date();
-
-        // Check expiration
-        const notExpired =
-          !matchedPromo.expiresAt || new Date(matchedPromo.expiresAt) >= now;
-
-        // Check total usage limit
-        const withinUsageLimit =
-          !matchedPromo.usageLimit ||
-          matchedPromo.usedCount < matchedPromo.usageLimit;
-
-        // Check per-user limit (if user is authenticated)
-        let withinUserLimit = true;
-        if (req.user && req.user.id) {
-          const userUsageCount = await CustomerPromoCodeUse.countDocuments({
-            user_id: req.user.id,
-            promoCodeId: matchedPromo._id,
-          });
-          withinUserLimit = userUsageCount < (matchedPromo.perUserLimit || 1);
-        }
-
-        // Check minimum order amount
-        const meetsMinAmount =
-          productsSubtotal >= (matchedPromo.minOrderAmount || 0);
-
-        if (
-          notExpired &&
-          withinUsageLimit &&
-          withinUserLimit &&
-          meetsMinAmount
-        ) {
-          // Calculate the actual discount based on subtotal
-          promoDiscount =
-            matchedPromo.type === "fixed"
-              ? matchedPromo.discount
-              : (productsSubtotal * matchedPromo.discount) / 100;
-
-          promoCodeId = matchedPromo._id;
-          console.log(
-            `✅ Valid promo code applied: ${promoCode}, Discount: $${promoDiscount.toFixed(2)}`,
-          );
-        } else {
-          console.log(`⚠️ Promo code validation failed:`);
-          console.log(`   - Expired: ${!notExpired}`);
-          console.log(`   - Within usage limit: ${withinUsageLimit}`);
-          console.log(`   - Within user limit: ${withinUserLimit}`);
-          console.log(`   - Meets minimum amount: ${meetsMinAmount}`);
-          if (!meetsMinAmount) {
-            console.log(
-              `   - Subtotal: $${productsSubtotal}, Min required: $${matchedPromo.minOrderAmount || 0}`,
-            );
-          }
-        }
-      } else {
-        console.log(
-          `⚠️ Promo code not found or inactive for seller: ${promoCode}`,
-        );
-      }
-    } catch (error) {
-      console.error("❌ Error validating promo code:", error);
-      // Continue without promo code if validation fails
-    }
-  }
-
-  // 💡 Step 2: Apply proportional discount to each product and build line items
-  const totalBasePrice = productDataList.reduce(
-    (sum, pData) => sum + pData.basePrice * pData.quantity,
-    0,
-  );
-
-  // Apply proportional discount to each product and build line items
-  for (const pData of productDataList) {
-    const { product, basePrice, quantity, originalItem } = pData;
-
-    // Calculate proportional discount for this product
-    let finalUnitPrice = basePrice;
-    if (promoDiscount > 0 && totalBasePrice > 0) {
-      const proportion = (basePrice * quantity) / totalBasePrice;
-      const discountShare = promoDiscount * proportion;
-      finalUnitPrice = basePrice - discountShare / quantity;
-      finalUnitPrice = Math.max(0, Math.round(finalUnitPrice * 100) / 100); // 2 decimals, ensure non-negative
-    }
-
-    // Ensure product name is not empty (Stripe requirement)
-    const productName =
-      product.name && typeof product.name === "string" && product.name.trim()
-        ? product.name.trim()
-        : `Product ${String(product._id)}`;
-
-    // Ensure description is valid (max 500 chars for Stripe)
-    let productDescription = "";
-    if (product.description && typeof product.description === "string") {
-      productDescription = product.description.trim().substring(0, 500);
-    }
-
-    // Validate product name length (Stripe requires 1-500 chars)
-    if (productName.length < 1 || productName.length > 500) {
-      console.error(
-        `Invalid product name length for product ${product._id}: ${productName.length}`,
-      );
-      return next(
-        new AppError(
-          `Product name validation failed for product ${product._id}`,
-          400,
-        ),
-      );
-    }
-
-    console.log(
-      `Adding product to line items: ${productName}, Original Price: ${basePrice}, Final Price: ${finalUnitPrice}, Qty: ${quantity}`,
+  try {
+    const breakdown = await calculateOrderBreakdown(
+      products,
+      shippingMethod,
+      promoCode,
+      req.user,
     );
 
-    lineItems.push({
-      price_data: {
-        currency: "usd",
-        product_data: {
-          name: productName,
-          description: productDescription,
-          images:
-            product.productImages &&
-            Array.isArray(product.productImages) &&
-            product.productImages.length > 0
-              ? [String(product.productImages[0])]
-              : [],
-        },
-        unit_amount: Math.round(finalUnitPrice * 100), // Convert to cents with discount applied
-      },
-      quantity: quantity,
-    });
-  }
+    const {
+      subtotal,
+      promoDiscount,
+      adminDiscount,
+      shippingCost,
+      taxAmount,
+      totalAmount,
+      platformFeeAmount,
+      promoCodeId,
+      sellerId,
+      sellerIds,
+      productDetailsArr,
+      hasStripeConnect,
+      platformFeeConfig,
+      activeTax,
+    } = breakdown;
 
-  // Recalculate subtotal with discounts applied to line items
-  const productsSubtotalWithDiscount =
-    lineItems.reduce(
-      (sum, item) => sum + item.price_data.unit_amount * item.quantity,
-      0,
-    ) / 100;
+    const seller = await User.findById(sellerId);
+    const lineItems = [];
 
-  // 💡 Step 3: Shipping cost based on method (must match frontend calculation)
-  let shippingCost = 0;
-  if (shippingMethod === "express") {
-    shippingCost = 12.99;
-  } else if (shippingMethod === "overnight") {
-    shippingCost = 24.99;
-  } else {
-    // Standard shipping - match frontend logic: free if subtotal > 50, else 5.99
-    if (productsSubtotalWithDiscount > 50) {
-      shippingCost = 0;
-    } else {
-      // Check seller's free shipping threshold first, then fallback to 5.99
-      if (
-        seller.sellerProfile.freeShippingThreshold &&
-        productsSubtotalWithDiscount >=
-          seller.sellerProfile.freeShippingThreshold
-      ) {
-        shippingCost = 0;
-      } else {
-        shippingCost = seller.sellerProfile.shippingCharges || 5.99;
+    // 💡 Step 2: Build line items from breakdown data
+    for (const pData of productDetailsArr) {
+      const { product, basePrice, quantity, finalPricePerUnit } = pData;
+
+      const productName =
+        product.name?.trim().substring(0, 500) || `Product ${product._id}`;
+
+      let productDescription = null;
+      if (product.description && typeof product.description === "string") {
+        const trimmed = product.description.trim().substring(0, 500);
+        if (trimmed.length > 0) productDescription = trimmed;
       }
-    }
-  }
 
-  console.log(
-    `Shipping calculation: Method=${shippingMethod}, Subtotal=$${productsSubtotalWithDiscount.toFixed(2)}, Shipping=$${shippingCost.toFixed(2)}`,
-  );
-
-  // Add shipping as line item if > 0
-  if (shippingCost > 0) {
-    lineItems.push({
-      price_data: {
-        currency: "usd",
-        product_data: {
-          name: `Shipping (${shippingMethod || "standard"})`,
-        },
-        unit_amount: Math.round(shippingCost * 100),
-      },
-      quantity: 1,
-    });
-  }
-
-  // 💡 Step 4: Calculate tax
-  const taxConfig = await TaxConfig.findOne({ isActive: true });
-  let taxAmount = 0;
-  let taxRate = 0.08;
-
-  if (taxConfig && taxConfig.rate) {
-    taxRate = taxConfig.rate / 100;
-  }
-
-  const taxableAmount = productsSubtotalWithDiscount;
-  taxAmount = taxableAmount * taxRate;
-  taxAmount = Math.round(taxAmount * 100) / 100;
-
-  if (taxAmount > 0) {
-    lineItems.push({
-      price_data: {
-        currency: "usd",
-        product_data: {
-          name: "Tax",
-        },
-        unit_amount: Math.round(taxAmount * 100),
-      },
-      quantity: 1,
-    });
-  }
-
-  // Calculate final total
-  const totalAfterDiscount = productsSubtotalWithDiscount;
-  const finalTotal = totalAfterDiscount + shippingCost + taxAmount;
-
-  // ✅ Step 4.5: Calculate Platform Fee
-  const hasStripeConnect =
-    seller.sellerProfile?.stripeAccountId &&
-    seller.sellerProfile?.stripeAccountStatus === "active";
-
-  let platformFeeAmount = 0;
-  const platformFeeConfig = await PlatformFee.findOne();
-  console.log("Platform fee 0==>");
-
-  // if (platformFeeConfig && hasStripeConnect) {
-  console.log("Platform fee 1==>");
-
-  if (platformFeeConfig.type === "fixed") {
-    console.log("Platform fee 2==>");
-
-    platformFeeAmount = platformFeeConfig.fee;
-  } else if (platformFeeConfig.type === "percentage") {
-    platformFeeAmount = (finalTotal * platformFeeConfig.fee) / 100;
-  }
-  platformFeeAmount = Math.round(platformFeeAmount * 100) / 100;
-  console.log("Platform fee 3==>", platformFeeAmount);
-
-  console.log(
-    `💰 Platform fee calculated: $${platformFeeAmount.toFixed(2)} (${platformFeeConfig.type})`,
-  );
-  // } else {
-  //   console.log(
-  //     `💰 No platform fee (Stripe Connect not enabled for seller or no fee config)`,
-  //   );
-  // }
-
-  console.log(`\n========== CHECKOUT SESSION CALCULATION ==========`);
-  console.log(`Products Subtotal: $${productsSubtotalWithDiscount.toFixed(2)}`);
-  if (promoDiscount > 0) {
-    console.log(`Promo Discount: -$${promoDiscount.toFixed(2)}`);
-  }
-  console.log(`Shipping (${shippingMethod}): $${shippingCost.toFixed(2)}`);
-  console.log(
-    `Tax (${(taxRate * 100).toFixed(2)}% on discounted total): $${taxAmount.toFixed(2)}`,
-  );
-  console.log(`Platform Fee: $${platformFeeAmount.toFixed(2)}`); // ✅ Log platform fee
-  console.log(`TOTAL: $${finalTotal.toFixed(2)}`);
-  console.log(
-    `Seller Receives: $${(finalTotal - platformFeeAmount).toFixed(2)}`,
-  ); // ✅ Log seller amount
-  console.log(`================================================`);
-
-  // 💡 Step 5: Create metadata for order creation
-  const productsWithPrices = [];
-  for (const item of products) {
-    const product = await Product.findById(item.product);
-    if (!product) continue;
-
-    let itemPrice = item.price ? Number(item.price) : Number(product.price);
-
-    if (
-      !item.price &&
-      product.discount &&
-      (!product.discountExpires ||
-        new Date(product.discountExpires) >= new Date())
-    ) {
-      if (product.discountType === "fixed") itemPrice -= product.discount;
-      else if (product.discountType === "percentage")
-        itemPrice -= (itemPrice * product.discount) / 100;
-      if (itemPrice < 0) itemPrice = 0;
-    }
-
-    if (!itemPrice || itemPrice <= 0) {
-      itemPrice = Number(product.price) || 0;
-    }
-
-    productsWithPrices.push({
-      product: String(item.product),
-      quantity: Number(item.quantity),
-      price: Number(itemPrice),
-    });
-  }
-
-  console.log(
-    "📦 Metadata products:",
-    JSON.stringify(productsWithPrices, null, 2),
-  );
-
-  const userId = String(req.user._id || req.user.id);
-
-  const metadata = {
-    buyer: userId,
-    products: JSON.stringify(productsWithPrices),
-    shippingAddress: JSON.stringify(shippingAddress),
-    shippingMethod: shippingMethod || "standard",
-    shippingCost: shippingCost.toString(),
-    taxAmount: taxAmount.toString(),
-    platformFeeAmount: platformFeeAmount.toString(), // ✅ Add platform fee to metadata
-    platformFeeType: platformFeeConfig?.type || "none", // ✅ Store fee type
-    promoCodeId: promoCodeId || null,
-  };
-
-  console.log("📦 Metadata buyer ID:", userId);
-  console.log("💰 Metadata platform fee:", platformFeeAmount); // ✅ Log
-
-  // 💡 Step 6: Validate line items before creating session
-  if (lineItems.length === 0) {
-    return next(new AppError("No valid line items to process", 400));
-  }
-
-  for (let i = 0; i < lineItems.length; i++) {
-    const item = lineItems[i];
-    if (
-      !item.price_data?.product_data?.name ||
-      typeof item.price_data.product_data.name !== "string" ||
-      item.price_data.product_data.name.trim().length === 0
-    ) {
-      console.error(`Line item ${i} missing or invalid product name:`, item);
-      return next(
-        new AppError(`Line item ${i + 1} is missing product name`, 400),
-      );
-    }
-    if (!item.price_data?.unit_amount || item.price_data.unit_amount <= 0) {
-      console.error(`Line item ${i} has invalid price:`, item);
-      return next(new AppError(`Line item ${i + 1} has invalid price`, 400));
-    }
-  }
-
-  console.log(
-    `Creating Stripe Checkout Session with ${lineItems.length} line items`,
-  );
-
-  // 💡 Step 7: Find or create Stripe customer by email
-  const customerEmail = shippingAddress?.email || req.user.email;
-  let stripeCustomerId = null;
-
-  if (customerEmail) {
-    try {
-      const existingCustomers = await stripe.customers.list({
-        email: customerEmail,
-        limit: 1,
-      });
-
-      if (existingCustomers.data.length > 0) {
-        stripeCustomerId = existingCustomers.data[0].id;
-        console.log(
-          `✅ Found existing Stripe customer: ${stripeCustomerId} for email: ${customerEmail}`,
-        );
-      } else {
-        const newCustomer = await stripe.customers.create({
-          email: customerEmail,
-          name: req.user.name || shippingAddress?.name,
-          metadata: {
-            userId: String(req.user._id || req.user.id),
+      lineItems.push({
+        price_data: {
+          currency: "usd",
+          product_data: {
+            name: productName,
+            ...(productDescription ? { description: productDescription } : {}),
+            images:
+              product.productImages?.length > 0
+                ? [String(product.productImages[0])]
+                : [],
           },
-        });
-        stripeCustomerId = newCustomer.id;
-        console.log(
-          `✅ Created new Stripe customer: ${stripeCustomerId} for email: ${customerEmail}`,
-        );
-      }
-    } catch (error) {
-      console.error("❌ Error finding/creating Stripe customer:", error);
-    }
-  }
-
-  // 💡 Step 8: Create Stripe Checkout Session
-  const getFrontendUrl = () => {
-    if (process.env.FRONTEND_URL) {
-      return process.env.FRONTEND_URL;
+          unit_amount: Math.round(finalPricePerUnit * 100),
+        },
+        quantity,
+      });
     }
 
-    const origin = req.headers.origin || req.headers.referer;
-    if (origin) {
-      try {
-        const url = new URL(origin);
-        if (
-          !url.hostname.includes("localhost") &&
-          !url.hostname.includes("127.0.0.1")
-        ) {
-          return `${url.protocol}//${url.host}`;
-        }
-      } catch (e) {
-        console.warn("Could not parse origin:", origin);
-      }
+    // Add shipping as line item
+    if (shippingCost > 0) {
+      lineItems.push({
+        price_data: {
+          currency: "usd",
+          product_data: {
+            name: `Shipping (${shippingMethod || "standard"})`,
+          },
+          unit_amount: Math.round(shippingCost * 100),
+        },
+        quantity: 1,
+      });
     }
 
-    return "http://localhost:3000";
-  };
+    // Add tax as line item
+    if (taxAmount > 0) {
+      lineItems.push({
+        price_data: {
+          currency: "usd",
+          product_data: {
+            name: "Tax",
+          },
+          unit_amount: Math.round(taxAmount * 100),
+        },
+        quantity: 1,
+      });
+    }
 
-  const frontendUrl = getFrontendUrl();
-  console.log("🌐 Frontend URL for Stripe redirect:", frontendUrl);
+    // Add admin discount as a negative line item if applicable (Stripe doesn't like negative prices,
+    // but the helper already distributed discounts into finalPricePerUnit of products.
+    // Wait, if there's an admin discount NOT included in promoDiscount, it's also distributed.
+    // So products already reflect the TOTAL discount.
 
-  const sessionConfig = {
-    payment_method_types: ["card"],
-    line_items: lineItems,
-    mode: "payment",
-    success_url: `${frontendUrl}/order-success?session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${frontendUrl}/order-cancel`,
-    metadata: metadata,
-  };
+    // 💡 Step 5: Create metadata for order creation
+    const productsMetadata = productDetailsArr.map((p) => ({
+      product: String(p.product._id),
+      quantity: p.quantity,
+      price: p.finalPricePerUnit,
+    }));
 
-  // ✅ Add Stripe Connect configuration if seller has connected account
-  // ✅ Settlement logic changed: We now hold the commission and settle every Wednesday.
-  // Immediate transfer to seller is disabled.
-  /*
-  if (hasStripeConnect && platformFeeAmount > 0) {
-    sessionConfig.payment_intent_data = {
-      application_fee_amount: Math.round(platformFeeAmount * 100), // ✅ Platform fee in cents
-      transfer_data: {
-        destination: seller.sellerProfile.stripeAccountId, // ✅ Transfer to seller's account
-      },
+    const userId = String(req.user._id || req.user.id);
+
+    const metadata = {
+      buyer: userId,
+      products: JSON.stringify(productsMetadata),
+      shippingAddress: JSON.stringify(shippingAddress),
+      shippingMethod: shippingMethod || "standard",
+      shippingCost: shippingCost.toString(),
+      taxAmount: taxAmount.toString(),
+      platformFeeAmount: platformFeeAmount.toString(),
+      platformFeeType: platformFeeConfig?.type || "none",
+      sellerIds: JSON.stringify(sellerIds),
+      promoCodeId: promoCodeId || null,
     };
 
-    console.log(`✅ Stripe Connect configured:`);
-    console.log(`   Destination: ${seller.sellerProfile.stripeAccountId}`);
+    console.log("📦 Metadata buyer ID:", userId);
+    console.log("💰 Metadata platform fee:", platformFeeAmount); // ✅ Log
+
+    // 💡 Step 6: Validate line items before creating session
+    if (lineItems.length === 0) {
+      return next(new AppError("No valid line items to process", 400));
+    }
+
+    for (let i = 0; i < lineItems.length; i++) {
+      const item = lineItems[i];
+      if (
+        !item.price_data?.product_data?.name ||
+        typeof item.price_data.product_data.name !== "string" ||
+        item.price_data.product_data.name.trim().length === 0
+      ) {
+        console.error(`Line item ${i} missing or invalid product name:`, item);
+        return next(
+          new AppError(`Line item ${i + 1} is missing product name`, 400),
+        );
+      }
+      if (!item.price_data?.unit_amount || item.price_data.unit_amount <= 0) {
+        console.error(`Line item ${i} has invalid price:`, item);
+        return next(new AppError(`Line item ${i + 1} has invalid price`, 400));
+      }
+    }
+
     console.log(
-      `   Application Fee: ${Math.round(platformFeeAmount * 100)} cents`,
+      `Creating Stripe Checkout Session with ${lineItems.length} line items`,
     );
+
+    // 💡 Step 7: Find or create Stripe customer by email
+    const customerEmail = shippingAddress?.email || req.user.email;
+    let stripeCustomerId = null;
+
+    if (customerEmail) {
+      try {
+        const existingCustomers = await stripe.customers.list({
+          email: customerEmail,
+          limit: 1,
+        });
+
+        if (existingCustomers.data.length > 0) {
+          stripeCustomerId = existingCustomers.data[0].id;
+          console.log(
+            `✅ Found existing Stripe customer: ${stripeCustomerId} for email: ${customerEmail}`,
+          );
+        } else {
+          const newCustomer = await stripe.customers.create({
+            email: customerEmail,
+            name: req.user.name || shippingAddress?.name,
+            metadata: {
+              userId: String(req.user._id || req.user.id),
+            },
+          });
+          stripeCustomerId = newCustomer.id;
+          console.log(
+            `✅ Created new Stripe customer: ${stripeCustomerId} for email: ${customerEmail}`,
+          );
+        }
+      } catch (error) {
+        console.error("❌ Error finding/creating Stripe customer:", error);
+      }
+    }
+
+    // 💡 Step 8: Create Stripe Checkout Session
+    const getFrontendUrl = () => {
+      if (process.env.FRONTEND_URL) {
+        return process.env.FRONTEND_URL;
+      }
+
+      const origin = req.headers.origin || req.headers.referer;
+      if (origin) {
+        try {
+          const url = new URL(origin);
+          if (
+            !url.hostname.includes("localhost") &&
+            !url.hostname.includes("127.0.0.1")
+          ) {
+            return `${url.protocol}//${url.host}`;
+          }
+        } catch (e) {
+          console.warn("Could not parse origin:", origin);
+        }
+      }
+
+      return "http://localhost:3000";
+    };
+
+    const frontendUrl = getFrontendUrl();
+    console.log("🌐 Frontend URL for Stripe redirect:", frontendUrl);
+
+    const sessionConfig = {
+      payment_method_types: ["card"],
+      line_items: lineItems,
+      mode: "payment",
+      success_url: `${frontendUrl}/order-success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${frontendUrl}/order-cancel`,
+      metadata: metadata,
+    };
+
+    // ✅ Add Stripe Connect configuration if seller has connected account
+    // ✅ Settlement logic changed: We now hold the commission and settle every Wednesday.
+    // Immediate transfer to seller is disabled.
+    /*
+    if (hasStripeConnect && platformFeeAmount > 0) {
+      sessionConfig.payment_intent_data = {
+        application_fee_amount: Math.round(platformFeeAmount * 100), // ✅ Platform fee in cents
+        transfer_data: {
+          destination: seller.sellerProfile.stripeAccountId, // ✅ Transfer to seller's account
+        },
+      };
+  
+      console.log(`✅ Stripe Connect configured:`);
+      console.log(`   Destination: ${seller.sellerProfile.stripeAccountId}`);
+      console.log(
+        `   Application Fee: ${Math.round(platformFeeAmount * 100)} cents`,
+      );
+    }
+    */
+
+    if (stripeCustomerId) {
+      sessionConfig.customer = stripeCustomerId;
+    } else {
+      sessionConfig.customer_email = customerEmail;
+    }
+
+    const session = await stripe.checkout.sessions.create(sessionConfig);
+
+    res.status(200).json({
+      status: "success",
+      sessionId: session.id,
+      url: session.url,
+      breakdown: {
+        productsSubtotal: subtotal,
+        shippingCost: shippingCost,
+        taxAmount: taxAmount,
+        platformFee: platformFeeAmount,
+        total: totalAmount,
+        sellerReceives: breakdown.sellerReceives,
+      },
+    });
+  } catch (error) {
+    return next(new AppError(error.message, 400));
   }
-  */
-
-  if (stripeCustomerId) {
-    sessionConfig.customer = stripeCustomerId;
-  } else {
-    sessionConfig.customer_email = customerEmail;
-  }
-
-  const session = await stripe.checkout.sessions.create(sessionConfig);
-
-  res.status(200).json({
-    status: "success",
-    sessionId: session.id,
-    url: session.url,
-    breakdown: {
-      productsSubtotal: productsSubtotal,
-      shippingCost: shippingCost,
-      taxAmount: taxAmount,
-      platformFee: platformFeeAmount, // ✅ Include platform fee in response
-      total: finalTotal,
-      sellerReceives: finalTotal - platformFeeAmount, // ✅ What seller receives
-    },
-  });
 });
 
 // ✅ Create Order Immediately After Payment (called from frontend after payment success)
@@ -1456,6 +1394,62 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
     );
   }
 
+  // ✅ Create SellerSettlement records for ALL sellers in this order
+  try {
+    const orderDate = new Date();
+    const maturityDate = new Date(orderDate);
+    maturityDate.setDate(maturityDate.getDate() + 3); // 3 Days Buffer
+    const scheduledSettlementDate = calculateSettlementDate(maturityDate);
+
+    // Group products by seller to create per-seller settlement records
+    const sellerProductsMap = {};
+    for (const pp of purchaseProducts) {
+      const sId = String(pp.seller);
+      if (!sellerProductsMap[sId]) sellerProductsMap[sId] = [];
+      sellerProductsMap[sId].push(pp);
+    }
+
+    const orderSubtotal = purchaseProducts.reduce(
+      (sum, pp) => sum + pp.price * pp.quantity,
+      0,
+    );
+
+    for (const sId of Object.keys(sellerProductsMap)) {
+      const sellerItems = sellerProductsMap[sId];
+      const sellerSubtotal = sellerItems.reduce(
+        (sum, pp) => sum + pp.price * pp.quantity,
+        0,
+      );
+      // Proportional platform fee based on seller's share of the order
+      const proportion = orderSubtotal > 0 ? sellerSubtotal / orderSubtotal : 0;
+      const sellerPlatformFee =
+        Math.round(platformFeeAmount * proportion * 100) / 100;
+      const sellerCommission =
+        Math.round((sellerSubtotal - sellerPlatformFee) * 100) / 100;
+
+      await SellerSettlement.create({
+        sellerId: sId,
+        purchaseId: order._id,
+        products: sellerItems.map((pp) => ({
+          product: String(pp.product),
+          quantity: pp.quantity,
+          price: pp.price,
+        })),
+        totalOrderAmount: sellerSubtotal,
+        commissionAmount: sellerCommission,
+        platformFee: sellerPlatformFee,
+        status: "pending",
+        scheduledSettlementDate,
+      });
+      console.log(
+        `✅ SellerSettlement created for seller ${sId} ($${sellerCommission}), scheduled for ${scheduledSettlementDate}`,
+      );
+    }
+  } catch (settlementError) {
+    console.error("⚠️ Failed to create seller settlements:", settlementError);
+    // Don't fail the order if settlement creation fails
+  }
+
   // Clear cart (use finalBuyerString)
   try {
     const { Cart } = await import("../../models/customers/cart.js");
@@ -1612,11 +1606,30 @@ const createPurchaseFromPaymentIntent = async (paymentIntent) => {
   let success = false;
 
   while (!success && attempt < 3) {
-    const session = await mongoose.startSession();
+    let session = await mongoose.startSession();
     session.startTransaction();
 
     try {
-      const metadata = paymentIntent.metadata || {};
+      let metadata = paymentIntent.metadata || {};
+      if (!metadata.buyer) {
+        console.log(
+          "⚠️ No metadata on payment intent, fetching checkout session...",
+        );
+
+        const sessions = await stripe.checkout.sessions.list({
+          payment_intent: paymentIntent.id,
+          limit: 1,
+        });
+
+        if (!sessions.data.length) {
+          throw new Error(
+            "No checkout session found for payment intent: " + paymentIntent.id,
+          );
+        }
+
+        metadata = sessions.data[0].metadata || {};
+        console.log("✅ Metadata fetched from checkout session:", metadata);
+      }
       const buyer = metadata.buyer;
       const products = metadata.products ? JSON.parse(metadata.products) : [];
       const shippingAddress = metadata.shippingAddress
@@ -1710,27 +1723,54 @@ const createPurchaseFromPaymentIntent = async (paymentIntent) => {
         { session },
       );
 
-      // ✅ Create SellerSettlement record
+      // ✅ Create SellerSettlement records for ALL sellers in this order
       const platformFeeAmount = Number(metadata.platformFeeAmount) || 0;
-      const commissionAmount = totalAmount - platformFeeAmount;
 
       const orderDate = new Date();
       const maturityDate = new Date(orderDate);
       maturityDate.setDate(maturityDate.getDate() + 3); // 3 Days Buffer
       const scheduledSettlementDate = calculateSettlementDate(maturityDate);
 
-      // Get seller from first product (assuming single seller per order as per existing logic)
-      const sellerId = purchaseProducts[0]?.seller;
+      // Group products by seller to create per-seller settlement records
+      const sellerProductsMap = {};
+      for (const pp of purchaseProducts) {
+        const sId = String(pp.seller);
+        if (!sellerProductsMap[sId]) sellerProductsMap[sId] = [];
+        sellerProductsMap[sId].push(pp);
+      }
 
-      if (sellerId) {
+      const orderSubtotal = purchaseProducts.reduce(
+        (sum, pp) => sum + pp.price * pp.quantity,
+        0,
+      );
+
+      for (const sId of Object.keys(sellerProductsMap)) {
+        const sellerItems = sellerProductsMap[sId];
+        const sellerSubtotal = sellerItems.reduce(
+          (sum, pp) => sum + pp.price * pp.quantity,
+          0,
+        );
+        // Proportional platform fee based on seller's share of the order
+        const proportion =
+          orderSubtotal > 0 ? sellerSubtotal / orderSubtotal : 0;
+        const sellerPlatformFee =
+          Math.round(platformFeeAmount * proportion * 100) / 100;
+        const sellerCommission =
+          Math.round((sellerSubtotal - sellerPlatformFee) * 100) / 100;
+
         await SellerSettlement.create(
           [
             {
-              sellerId,
+              sellerId: sId,
               purchaseId: purchase[0]._id,
-              totalOrderAmount: totalAmount,
-              commissionAmount: commissionAmount,
-              platformFee: platformFeeAmount,
+              products: sellerItems.map((pp) => ({
+                product: String(pp.product),
+                quantity: pp.quantity,
+                price: pp.price,
+              })),
+              totalOrderAmount: sellerSubtotal,
+              commissionAmount: sellerCommission,
+              platformFee: sellerPlatformFee,
               status: "pending",
               scheduledSettlementDate,
             },
@@ -1738,7 +1778,7 @@ const createPurchaseFromPaymentIntent = async (paymentIntent) => {
           { session },
         );
         console.log(
-          `✅ SellerSettlement created for seller ${sellerId}, scheduled for ${scheduledSettlementDate}`,
+          `✅ SellerSettlement created for seller ${sId} ($${sellerCommission}), scheduled for ${scheduledSettlementDate}`,
         );
       }
 
@@ -1842,28 +1882,18 @@ const handleRefund = async (charge) => {
     const hasPlatformFee = platformFeeAmount > 0;
 
     // ✅ Calculate application fee refund
-    // When refunding with Stripe Connect, the application fee is automatically handled
-    // But we need to track it for our records
     let platformFeeRefunded = 0;
     if (hasPlatformFee) {
       if (isFullRefund) {
-        // Full refund = full platform fee reversal
         platformFeeRefunded = platformFeeAmount;
       } else {
-        // Partial refund = proportional platform fee reversal
         const refundPercentage = refundAmount / purchase.totalAmount;
         platformFeeRefunded = platformFeeAmount * refundPercentage;
         platformFeeRefunded = Math.round(platformFeeRefunded * 100) / 100;
       }
     }
 
-    // Update purchase status
-    purchase.paymentStatus = isFullRefund ? "refunded" : "partially_refunded";
-    purchase.refundAmount = refundAmount;
-    purchase.refundedAt = new Date();
-    purchase.platformFeeRefunded = platformFeeRefunded; // ✅ Track platform fee refund
-
-    // Add refund timeline event
+    // Add refund timeline event at order level
     purchase.orderTimeline.push({
       event: isFullRefund ? "Full Refund Issued" : "Partial Refund Issued",
       timestamp: new Date(),
@@ -1878,7 +1908,6 @@ const handleRefund = async (charge) => {
           $inc: { stockQuantity: item.quantity },
         });
 
-        // Update product timeline
         item.timeline.push({
           event: "Stock Restored (Refund)",
           timestamp: new Date(),
@@ -1891,28 +1920,151 @@ const handleRefund = async (charge) => {
 
     await purchase.save();
 
-    // ✅ Update SellerSettlement for refunds
-    const settlement = await SellerSettlement.findOne({
+    // ✅ Check refund metadata for seller/product information
+    const refundMetadata = charge.refunds?.data?.[0]?.metadata || {};
+    const refundProductId = refundMetadata.productId || null;
+    const refundSellerId = refundMetadata.sellerId || null;
+
+    // ✅ Get all settlements for this purchase
+    const settlements = await SellerSettlement.find({
       purchaseId: purchase._id,
     });
-    if (settlement && settlement.status === "pending") {
-      // Calculate how much to deduct from seller's commission
-      const refundPercentage = refundAmount / purchase.totalAmount;
-      const commissionDeduction =
-        settlement.commissionAmount * refundPercentage;
 
-      settlement.commissionAmount -= commissionDeduction;
-      settlement.refundDeductions += refundAmount;
-
-      if (isFullRefund) {
-        settlement.status = "refunded";
-      }
-
-      await settlement.save();
+    // ✅ CASE 1: Refund includes specific product/seller info (from createRefund with productId)
+    if (refundProductId && refundSellerId) {
       console.log(
-        `✅ SellerSettlement updated for refund: Deducted $${commissionDeduction.toFixed(2)} from commission`,
+        `📦 Processing seller-specific refund: Product ${refundProductId}, Seller ${refundSellerId}`
       );
+
+      // Find the specific seller's settlement
+      const sellerSettlement = settlements.find(
+        s => String(s.sellerId) === String(refundSellerId)
+      );
+
+      if (sellerSettlement) {
+        // Find the specific product in this settlement
+        const settlementProduct = sellerSettlement.products.find(
+          p => String(p.product) === String(refundProductId)
+        );
+
+        if (settlementProduct) {
+          // Mark ONLY this product as refunded
+          settlementProduct.refundStatus = "refunded";
+          settlementProduct.refundAmount = refundAmount;
+          settlementProduct.refundedAt = new Date();
+
+          // Update settlement refund tracking
+          sellerSettlement.refundDeductions = (sellerSettlement.refundDeductions || 0) + refundAmount;
+
+          // Calculate commission deduction
+          const commissionDeduction =
+            sellerSettlement.commissionAmount * (refundAmount / sellerSettlement.totalOrderAmount);
+          sellerSettlement.commissionAmount -= commissionDeduction;
+
+          // Update settlement overall refund status - check THIS seller's products only
+          const allProductsRefunded = sellerSettlement.products.every(
+            (p) => p.refundStatus === "refunded"
+          );
+          const anyProductsRefunded = sellerSettlement.products.some(
+            (p) => p.refundStatus === "refunded"
+          );
+          
+          // Set refundStatus based on this seller's completion
+          sellerSettlement.refundStatus = allProductsRefunded
+            ? "full"
+            : anyProductsRefunded
+              ? "partial"
+              : "none";
+
+          // Update settlement status when all seller products are refunded
+          if (allProductsRefunded) {
+            sellerSettlement.status = "refunded";
+          }
+
+          await sellerSettlement.save();
+          console.log(
+            `✅ SellerSettlement updated for seller ${refundSellerId}: refundStatus="${sellerSettlement.refundStatus}", status="${sellerSettlement.status}", allProductsRefunded=${allProductsRefunded}, totalProducts=${sellerSettlement.products.length}`
+          );
+        } else {
+          console.error(`❌ Product ${refundProductId} not found in settlement for seller ${refundSellerId}`);
+        }
+      } else {
+        console.error(`❌ Settlement not found for seller ${refundSellerId}`);
+      }
     }
+    // ✅ CASE 2: Full order refund (all sellers)
+    else if (isFullRefund) {
+      console.log(`📦 Processing FULL order refund - updating ALL sellers`);
+
+      for (const settlement of settlements) {
+        // Calculate this seller's proportion of the order
+        const sellerProportion = settlement.totalOrderAmount / purchase.totalAmount;
+        const sellerRefundAmount = refundAmount * sellerProportion;
+
+        // Update each product in this settlement proportionally
+        for (const product of settlement.products) {
+          const productValue = product.price * product.quantity;
+          const productProportion =
+            settlement.totalOrderAmount > 0
+              ? productValue / settlement.totalOrderAmount
+              : 0;
+          const productRefundAmount = sellerRefundAmount * productProportion;
+
+          product.refundAmount = (product.refundAmount || 0) + productRefundAmount;
+          product.refundStatus = "refunded";
+          product.refundedAt = new Date();
+        }
+
+        // Update settlement refund tracking
+        settlement.refundDeductions += sellerRefundAmount;
+
+        // Calculate commission deduction
+        const commissionDeduction =
+          settlement.commissionAmount * (sellerRefundAmount / settlement.totalOrderAmount);
+        settlement.commissionAmount -= commissionDeduction;
+
+        // Update settlement overall refund status
+        settlement.refundStatus = "full";
+        settlement.status = "refunded";
+
+        await settlement.save();
+        console.log(
+          `✅ SellerSettlement updated for seller ${settlement.sellerId} (full refund): Deducted $${commissionDeduction}`
+        );
+      }
+    }
+    // ✅ CASE 3: Partial refund without product info (legacy/platform refund)
+    // This happens when customer initiates refund from Stripe dashboard without product details
+    // We distribute proportionally but DON'T mark products as fully refunded
+    else {
+      console.log(`📦 Processing PARTIAL refund without product info - distributing proportionally`);
+
+      for (const settlement of settlements) {
+        const sellerProportion = settlement.totalOrderAmount / purchase.totalAmount;
+        const sellerRefundAmount = refundAmount * sellerProportion;
+
+        // Add to refund deductions but DON'T change product refundStatus
+        // This tracks the money deducted without marking products as refunded
+        settlement.refundDeductions = (settlement.refundDeductions || 0) + sellerRefundAmount;
+
+        const commissionDeduction =
+          settlement.commissionAmount * (sellerRefundAmount / settlement.totalOrderAmount);
+        settlement.commissionAmount -= commissionDeduction;
+
+        // Mark as partial if there's any refund
+        if (sellerRefundAmount > 0 && settlement.refundStatus !== "full") {
+          settlement.refundStatus = "partial";
+        }
+
+        await settlement.save();
+        console.log(
+          `✅ SellerSettlement updated for seller ${settlement.sellerId} (partial refund): Deducted $${commissionDeduction}`
+        );
+      }
+    }
+
+    // ✅ Update purchase payment status based on all settlements
+    await updatePurchasePaymentStatus(purchase._id);
 
     console.log(
       `✅ ${isFullRefund ? "Full" : "Partial"} refund processed for order:`,
@@ -1923,9 +2075,6 @@ const handleRefund = async (charge) => {
         `   Platform fee reversed: $${platformFeeRefunded.toFixed(2)}`,
       );
     }
-
-    // TODO: Send email notification to buyer about refund
-    // await sendRefundEmail(purchase);
   } catch (err) {
     console.error("❌ Error handling refund:", err);
     throw err;
@@ -2103,20 +2252,29 @@ const handleDisputeClosed = async (dispute) => {
 
     await purchase.save();
 
-    // ✅ Update SellerSettlement for settlement/chargeback
-    const settlement = await SellerSettlement.findOne({
+    // ✅ Update SellerSettlement for settlement/chargeback (ALL sellers in this order)
+    const settlements = await SellerSettlement.find({
       purchaseId: purchase._id,
+      status: "pending",
     });
-    if (settlement && settlement.status === "pending") {
-      if (dispute.status === "lost") {
-        // If dispute is lost, the entire commission is likely gone (or proportional)
-        const lostAmount = dispute.amount / 100;
-        const refundPercentage = Math.min(1, lostAmount / purchase.totalAmount);
+
+    if (dispute.status === "lost") {
+      const lostAmount = dispute.amount / 100;
+
+      for (const settlement of settlements) {
+        // Proportional deduction based on seller's share of the order
+        const sellerProportion =
+          settlement.totalOrderAmount / purchase.totalAmount;
+        const sellerLostAmount = lostAmount * sellerProportion;
+        const refundPercentage = Math.min(
+          1,
+          sellerLostAmount / settlement.totalOrderAmount,
+        );
         const commissionDeduction =
           settlement.commissionAmount * refundPercentage;
 
         settlement.commissionAmount -= commissionDeduction;
-        settlement.refundDeductions += lostAmount;
+        settlement.refundDeductions += sellerLostAmount;
 
         if (refundPercentage >= 1) {
           settlement.status = "refunded";
@@ -2124,7 +2282,7 @@ const handleDisputeClosed = async (dispute) => {
 
         await settlement.save();
         console.log(
-          `✅ SellerSettlement updated for lost dispute: Deducted $${commissionDeduction.toFixed(2)} from commission`,
+          `✅ SellerSettlement updated for lost dispute (seller ${settlement.sellerId}): Deducted $${commissionDeduction.toFixed(2)} from commission`,
         );
       }
     }
@@ -2224,7 +2382,7 @@ export const requestRefundByCustomer = catchAsync(async (req, res, next) => {
 
 // 🔹 Manual Refund Controller (for admin/seller initiated refunds)
 export const createRefund = catchAsync(async (req, res, next) => {
-  const { orderId, amount, reason, action } = req.body;
+  const { orderId, amount, reason, action, productId, sellerId } = req.body;
 
   // 1. Find the purchase
   const purchase = await Purchase.findOne({ orderId });
@@ -2235,19 +2393,45 @@ export const createRefund = catchAsync(async (req, res, next) => {
       return next(new AppError("Order not found", 404));
     }
 
-    if (purchase.status !== "return_requested") {
-      return next(new AppError("Order is not in return_requested status", 400));
+    // If productId provided, reject at settlement level
+    if (productId) {
+      const product = purchase.products.find(
+        (p) => String(p.product) === String(productId),
+      );
+      if (product) {
+        const productSellerId = String(product.seller || sellerId);
+        // Update settlement instead of purchase
+        const settlement = await SellerSettlement.findOne({
+          purchaseId: purchase._id,
+          sellerId: productSellerId,
+        });
+        if (settlement) {
+          const settlementProduct = settlement.products.find(
+            (p) => String(p.product) === String(productId),
+          );
+          if (settlementProduct) {
+            settlementProduct.refundStatus = "rejected";
+            settlementProduct.refundReason = reason || "Refund rejected";
+            await settlement.save();
+          }
+        }
+      }
+      await purchase.save();
+    } else {
+      if (purchase.status !== "return_requested") {
+        return next(new AppError("Order is not in return_requested status", 400));
+      }
+
+      purchase.status = "return_rejected";
+      purchase.orderTimeline.push({
+        event: "Return Rejected",
+        timestamp: new Date(),
+        location: "Admin/Seller",
+        notes: `Reason: ${reason || "Refund rejected"}`,
+      });
+
+      await purchase.save();
     }
-
-    purchase.status = "return_rejected";
-    purchase.orderTimeline.push({
-      event: "Return Rejected",
-      timestamp: new Date(),
-      location: "Admin/Seller",
-      notes: `Reason: ${reason || "Refund rejected"}`,
-    });
-
-    await purchase.save();
 
     // Notify Customer about rejection
     try {
@@ -2281,19 +2465,153 @@ export const createRefund = catchAsync(async (req, res, next) => {
     return next(new AppError("No payment intent found for this order", 400));
   }
 
-  // Check if already refunded
+  // 2. Handle product-specific refund (multi-seller scenario)
+  if (productId) {
+    // Find the specific product in the order
+    const product = purchase.products.find(
+      (p) => String(p.product) === String(productId),
+    );
+
+    if (!product) {
+      return next(new AppError("Product not found in order", 404));
+    }
+
+    // Determine the seller for this product
+    const productSellerId = String(product.seller || sellerId);
+    if (!productSellerId) {
+      return next(new AppError("Seller information not found for this product", 400));
+    }
+
+    // Check if already refunded in settlement
+    const settlement = await SellerSettlement.findOne({
+      purchaseId: purchase._id,
+      sellerId: productSellerId,
+    });
+
+    if (settlement) {
+      const settlementProduct = settlement.products.find(
+        (p) => String(p.product) === String(productId),
+      );
+      if (settlementProduct && settlementProduct.refundStatus === "refunded") {
+        return next(new AppError("This product is already refunded", 400));
+      }
+    }
+
+    // Calculate refund amount (default to product price * quantity)
+    const productRefundAmount = amount || (product.price * product.quantity);
+    const isFullProductRefund = productRefundAmount >= (product.price * product.quantity);
+
+    // Get platform fee information
+    const platformFeeAmount = purchase.platformFeeAmount || 0;
+    const productProportion = purchase.totalAmount > 0
+      ? (product.price * product.quantity) / purchase.totalAmount
+      : 0;
+    const platformFeeRefund = platformFeeAmount * productProportion;
+
+    // 3. Create refund in Stripe
+    const refundConfig = {
+      payment_intent: purchase.paymentIntentId,
+      amount: Math.round(productRefundAmount * 100),
+      reason: "requested_by_customer",
+      metadata: {
+        orderId: purchase.orderId,
+        productId: String(product.product),
+        sellerId: productSellerId,
+        refundType: isFullProductRefund ? "full_product" : "partial_product",
+        platformFeeRefunded: platformFeeRefund.toString(),
+      },
+    };
+
+    const refund = await stripe.refunds.create(refundConfig);
+
+    // 4. Update the specific seller's settlement (NOT purchase products)
+    if (settlement) {
+      const settlementProduct = settlement.products.find(
+        (p) => String(p.product) === String(product.product),
+      );
+
+      if (settlementProduct) {
+        settlementProduct.refundStatus = "refunded";
+        settlementProduct.refundAmount = productRefundAmount;
+        settlementProduct.refundedAt = new Date();
+        settlementProduct.refundReason = reason || "Manual refund";
+      }
+
+      // Update settlement refund tracking
+      settlement.refundDeductions = (settlement.refundDeductions || 0) + productRefundAmount;
+
+      // Calculate commission deduction
+      const commissionDeduction =
+        settlement.commissionAmount * (productRefundAmount / settlement.totalOrderAmount);
+      settlement.commissionAmount -= commissionDeduction;
+
+      // Update settlement overall refund status - check THIS seller's products only
+      const allProductsRefunded = settlement.products.every(
+        (p) => p.refundStatus === "refunded",
+      );
+      const anyProductsRefunded = settlement.products.some(
+        (p) => p.refundStatus === "refunded",
+      );
+      
+      // Set refundStatus based on this seller's completion
+      settlement.refundStatus = allProductsRefunded
+        ? "full"
+        : anyProductsRefunded
+          ? "partial"
+          : "none";
+
+      // Update settlement status when all seller products are refunded
+      if (allProductsRefunded) {
+        settlement.status = "refunded";
+      }
+
+      await settlement.save();
+      
+      console.log(
+        `✅ SellerSettlement updated for seller ${productSellerId}: refundStatus="${settlement.refundStatus}", status="${settlement.status}", allProductsRefunded=${allProductsRefunded}, totalProducts=${settlement.products.length}`
+      );
+    }
+
+    // 5. Update purchase timeline
+    purchase.orderTimeline.push({
+      event: isFullProductRefund ? "Product Refund Approved" : "Partial Product Refund Approved",
+      timestamp: new Date(),
+      location: "Admin/Seller",
+      notes: `Reason: ${reason || "Manual Refund"}, Product: ${String(product.product)}, Amount: $${productRefundAmount.toFixed(2)}`,
+    });
+
+    // 6. Update overall purchase payment status based on all settlements
+    await updatePurchasePaymentStatus(purchase._id);
+
+    await purchase.save();
+
+    return res.status(200).json({
+      success: true,
+      message: `${isFullProductRefund ? "Full" : "Partial"} refund for product processed successfully`,
+      refund: {
+        id: refund.id,
+        amount: productRefundAmount,
+        productId: String(product.product),
+        sellerId: productSellerId,
+        platformFeeRefunded: platformFeeRefund,
+        status: refund.status,
+      },
+      order: purchase,
+    });
+  }
+  // 8. Handle full order refund (legacy behavior - all products, all sellers)
+  // Check if already fully refunded
   if (purchase.paymentStatus === "refunded") {
     return next(new AppError("Order already refunded", 400));
   }
 
-  // 2. Calculate refund details
   const refundAmount = amount || purchase.totalAmount;
   const isPartial = amount && amount < purchase.totalAmount;
 
   // Get platform fee information
   const platformFeeAmount = purchase.platformFeeAmount || 0;
 
-  // Calculate platform fee refund (Internal calculation)
+  // Calculate platform fee refund
   let platformFeeRefund = 0;
   if (platformFeeAmount > 0) {
     if (isPartial) {
@@ -2305,11 +2623,10 @@ export const createRefund = catchAsync(async (req, res, next) => {
     }
   }
 
-  // 3. Create refund in Stripe
-  // Since we hold funds and transfer manually via Cron, this is a simple platform refund.
+  // Create refund in Stripe
   const refundConfig = {
     payment_intent: purchase.paymentIntentId,
-    amount: Math.round(refundAmount * 100), // Convert to cents
+    amount: Math.round(refundAmount * 100),
     reason: "requested_by_customer",
     metadata: {
       orderId: purchase.orderId,
@@ -2320,13 +2637,31 @@ export const createRefund = catchAsync(async (req, res, next) => {
 
   const refund = await stripe.refunds.create(refundConfig);
 
-  // 4. Update Purchase Record
-  purchase.paymentStatus = isPartial ? "partially_refunded" : "refunded";
+  // Update all settlements (NOT purchase products)
+  const settlements = await SellerSettlement.find({ purchaseId: purchase._id });
+  for (const settlement of settlements) {
+    const sellerProportion = settlement.totalOrderAmount / purchase.totalAmount;
+    const sellerRefundAmount = refundAmount * sellerProportion;
 
-  // purchase.refundAmount = (purchase.refundAmount || 0) + refundAmount;
+    for (const product of settlement.products) {
+      product.refundStatus = "refunded";
+      product.refundAmount = sellerRefundAmount * ((product.price * product.quantity) / settlement.totalOrderAmount);
+      product.refundedAt = new Date();
+    }
+
+    settlement.refundDeductions = (settlement.refundDeductions || 0) + sellerRefundAmount;
+    const commissionDeduction = settlement.commissionAmount * (sellerRefundAmount / settlement.totalOrderAmount);
+    settlement.commissionAmount -= commissionDeduction;
+    settlement.refundStatus = "full";
+    settlement.status = "refunded";
+
+    await settlement.save();
+  }
+
+  // Update Purchase Record
+  purchase.paymentStatus = isPartial ? "partially_refunded" : "refunded";
   purchase.refundedAt = new Date();
-  purchase.platformFeeRefunded =
-    (purchase.platformFeeRefunded || 0) + platformFeeRefund;
+  purchase.platformFeeRefunded = (purchase.platformFeeRefunded || 0) + platformFeeRefund;
 
   purchase.orderTimeline.push({
     event: isPartial ? "Partial Refund Approved" : "Full Refund Approved",
