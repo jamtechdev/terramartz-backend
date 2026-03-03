@@ -1287,9 +1287,12 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
   console.log("📦 Final buyer ID to use (as string):", finalBuyerString);
   console.log("==============================================\n");
 
-  // Check if order already exists (try multiple buyer ID formats)
+  // Check if order already exists by sessionId OR paymentIntentId
   const existingOrder = await Purchase.findOne({
-    checkoutSessionId: sessionId,
+    $or: [
+      { checkoutSessionId: sessionId },
+      { paymentIntentId: session.payment_intent }
+    ]
   });
 
   // Also check by buyer if order found
