@@ -33,7 +33,11 @@ export const calculateOrderPaymentStatus = async (purchaseId) => {
   const settlements = await SellerSettlement.find({ purchaseId });
 
   if (!settlements || settlements.length === 0) {
-    return { paymentStatus: "paid", totalRefundAmount: 0, refundAmountBySeller: {} };
+    return {
+      paymentStatus: "paid",
+      totalRefundAmount: 0,
+      refundAmountBySeller: {},
+    };
   }
 
   let totalRefundAmount = 0;
@@ -48,14 +52,16 @@ export const calculateOrderPaymentStatus = async (purchaseId) => {
         refundedProducts++;
         totalRefundAmount += product.refundAmount || 0;
         const sellerId = String(settlement.sellerId);
-        refundAmountBySeller[sellerId] = (refundAmountBySeller[sellerId] || 0) + (product.refundAmount || 0);
+        refundAmountBySeller[sellerId] =
+          (refundAmountBySeller[sellerId] || 0) + (product.refundAmount || 0);
       }
     }
   }
 
   let paymentStatus = "paid";
   if (refundedProducts > 0) {
-    paymentStatus = refundedProducts === totalProducts ? "refunded" : "partially_refunded";
+    paymentStatus =
+      refundedProducts === totalProducts ? "refunded" : "partially_refunded";
   }
 
   return { paymentStatus, totalRefundAmount, refundAmountBySeller };
@@ -66,15 +72,16 @@ export const calculateOrderPaymentStatus = async (purchaseId) => {
  * @param {string} purchaseId - The purchase/order ID
  */
 export const updatePurchasePaymentStatus = async (purchaseId) => {
-  const { paymentStatus, totalRefundAmount } = await calculateOrderPaymentStatus(purchaseId);
-  
+  const { paymentStatus, totalRefundAmount } =
+    await calculateOrderPaymentStatus(purchaseId);
+
   const purchase = await Purchase.findById(purchaseId);
   if (purchase) {
     purchase.paymentStatus = paymentStatus;
     purchase.refundAmount = totalRefundAmount;
     await purchase.save();
   }
-  
+
   return { paymentStatus, totalRefundAmount };
 };
 
@@ -90,6 +97,7 @@ export const calculateOrderBreakdown = async (
   shippingMethod,
   promoCode,
   user,
+  useLoyaltyPoints = false,
 ) => {
   if (!products || products.length === 0)
     throw new Error("No products provided");
@@ -185,6 +193,9 @@ export const calculateOrderBreakdown = async (
       isActive: true,
     });
 
+    console.log(matchedPromo, "matchedPromo==>");
+    console.log(matchedPromo.sellerId, "matchedPromo.sellerId==>");
+
     if (matchedPromo) {
       // ✅ Check if ALL products in the cart belong to this promo code's seller
       // Use String conversion for reliable comparison
@@ -258,7 +269,57 @@ export const calculateOrderBreakdown = async (
     }
   }
 
-  const totalDiscount = promoDiscount + adminDiscount;
+  // 4.5. Loyalty Points Discount
+  let loyaltyDiscount = 0;
+  let pointsToUse = 0;
+  if (useLoyaltyPoints && user && user.id) {
+    // Fetch user's loyalty point balance
+    const userIdString = String(user.id || user._id);
+    const loyaltyRecords = await LoyaltyPoint.find({ user: userIdString });
+    
+    // Calculate balance: sum earned points, subtract redeemed points
+    const balance = loyaltyRecords.reduce((sum, record) => {
+      if (record.type === "earn") {
+        return sum + Math.abs(record.points);
+      } else if (record.type === "redeem") {
+        return sum - Math.abs(record.points);
+      }
+      return sum;
+    }, 0);
+
+    if (balance > 0) {
+      // Calculate subtotal after promo and admin discounts
+      const subtotalAfterOtherDiscounts = Math.max(
+        0,
+        subtotal - promoDiscount - adminDiscount,
+      );
+
+      // Loyalty discount can't exceed the remaining amount
+      const maxLoyaltyDiscount = balance * 0.1; // $0.1 per point
+      loyaltyDiscount = Math.min(
+        maxLoyaltyDiscount,
+        subtotalAfterOtherDiscounts,
+      );
+      loyaltyDiscount = Math.round(loyaltyDiscount * 100) / 100;
+
+      // Calculate actual points to use based on capped discount
+      pointsToUse = Math.round(loyaltyDiscount / 0.1);
+
+      console.log(`💎 Loyalty calculation:`);
+      console.log(
+        `   - User balance: ${balance} points ($${maxLoyaltyDiscount.toFixed(2)})`,
+      );
+      console.log(
+        `   - Subtotal after other discounts: $${subtotalAfterOtherDiscounts.toFixed(2)}`,
+      );
+      console.log(
+        `   - Loyalty discount applied: $${loyaltyDiscount.toFixed(2)}`,
+      );
+      console.log(`   - Points to use: ${pointsToUse}`);
+    }
+  }
+
+  const totalDiscount = promoDiscount + adminDiscount + loyaltyDiscount;
 
   // 5. Proportional discounting and final totals
   const totalAfterDiscount = Math.max(0, subtotal - totalDiscount);
@@ -326,6 +387,8 @@ export const calculateOrderBreakdown = async (
     subtotal: Math.round(subtotal * 100) / 100,
     promoDiscount: Math.round(promoDiscount * 100) / 100,
     adminDiscount: Math.round(adminDiscount * 100) / 100,
+    loyaltyDiscount: Math.round(loyaltyDiscount * 100) / 100,
+    pointsToUse,
     shippingCost: Math.round(shippingCost * 100) / 100,
     taxAmount,
     totalAmount,
@@ -345,7 +408,7 @@ export const calculateOrderBreakdown = async (
 
 // ✅ Get Checkout Breakdown (for frontend preview)
 export const getCheckoutBreakdown = catchAsync(async (req, res, next) => {
-  const { products, shippingMethod, promoCode } = req.body;
+  const { products, shippingMethod, promoCode, useLoyaltyPoints } = req.body;
 
   try {
     const breakdown = await calculateOrderBreakdown(
@@ -353,6 +416,7 @@ export const getCheckoutBreakdown = catchAsync(async (req, res, next) => {
       shippingMethod,
       promoCode,
       req.user,
+      useLoyaltyPoints,
     );
 
     res.status(200).json({
@@ -718,6 +782,64 @@ export const webhookPayment = async (req, res, next) => {
         // Don't fail the order if cart clearing fails
       }
 
+      // ✅ Add loyalty points for purchase
+      try {
+        const userOrderCount = await Purchase.countDocuments({
+          buyer: buyer,
+          paymentStatus: "paid",
+        });
+
+        console.log(`💎 Loyalty Points Processing for user ${buyer}:`);
+        console.log(`   - User order count: ${userOrderCount}`);
+        console.log(`   - Metadata:`, metadata);
+
+        if (userOrderCount >= 3) {
+          const pointsEarned = Math.floor(totalAmount / 10);
+          if (pointsEarned > 0) {
+            await LoyaltyPoint.create({
+              user: buyer,
+              points: pointsEarned,
+              type: "earn",
+              reason: "purchase",
+              referenceId: orderId,
+            });
+            console.log(`✅ Awarded ${pointsEarned} loyalty points to user ${buyer}`);
+          }
+        } else {
+          console.log(
+            `ℹ️ Loyalty points not awarded: User ${buyer} has ${userOrderCount} orders (minimum 3 required).`,
+          );
+        }
+
+        // ✅ Deduct loyalty points if used
+        const useLoyaltyPoints = metadata.useLoyaltyPoints === "true";
+        const loyaltyPointsUsed = Number(metadata.loyaltyPointsUsed || 0);
+
+        console.log(`💎 Checking loyalty points deduction:`);
+        console.log(`   - useLoyaltyPoints flag: ${useLoyaltyPoints} (type: ${typeof metadata.useLoyaltyPoints})`);
+        console.log(`   - loyaltyPointsUsed: ${loyaltyPointsUsed}`);
+        console.log(`   - Raw metadata.useLoyaltyPoints: "${metadata.useLoyaltyPoints}"`);
+        console.log(`   - Raw metadata.loyaltyPointsUsed: "${metadata.loyaltyPointsUsed}"`);
+
+        if (useLoyaltyPoints && loyaltyPointsUsed > 0) {
+          console.log(`💎 Creating redeem record...`);
+          await LoyaltyPoint.create({
+            user: buyer,
+            points: Math.abs(loyaltyPointsUsed), // Store as positive number
+            type: "redeem",
+            reason: "purchase",
+            referenceId: orderId,
+          });
+          console.log(
+            `✅ Deducted ${loyaltyPointsUsed} loyalty points from user ${buyer}`,
+          );
+        } else {
+          console.log(`⚠️ Loyalty points NOT deducted - condition not met`);
+        }
+      } catch (pointsError) {
+        console.error("⚠️ Failed to process loyalty points:", pointsError);
+      }
+
       // Record promo code usage if applicable
       const sessionMetadata = session.metadata || {};
       const usedPromoCodeId = sessionMetadata.promoCodeId;
@@ -802,7 +924,13 @@ export const webhookPayment = async (req, res, next) => {
 
 // ✅ Create Stripe Checkout Session (Hosted Payment Page)
 export const createCheckoutSession = catchAsync(async (req, res, next) => {
-  const { products, shippingAddress, promoCode, shippingMethod } = req.body;
+  const {
+    products,
+    shippingAddress,
+    promoCode,
+    shippingMethod,
+    useLoyaltyPoints,
+  } = req.body;
 
   if (!products || products.length === 0)
     return next(new AppError("No products provided", 400));
@@ -812,6 +940,7 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
   console.log(`\n========== RECEIVED CHECKOUT REQUEST ==========`);
   console.log(`Products count: ${products.length}`);
   console.log(`Shipping method: ${shippingMethod}`);
+  console.log(`Use loyalty points: ${useLoyaltyPoints}`);
   products.forEach((p, i) => {
     console.log(
       `Product ${i + 1}: ID=${p.product}, Qty=${p.quantity}, Price=${p.price !== undefined ? "$" + p.price : "NOT PROVIDED"}`,
@@ -825,12 +954,15 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
       shippingMethod,
       promoCode,
       req.user,
+      useLoyaltyPoints,
     );
 
     const {
       subtotal,
       promoDiscount,
       adminDiscount,
+      loyaltyDiscount,
+      pointsToUse,
       shippingCost,
       taxAmount,
       totalAmount,
@@ -843,6 +975,11 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
       platformFeeConfig,
       activeTax,
     } = breakdown;
+
+    // Validate loyalty points if requested
+    if (useLoyaltyPoints && pointsToUse === 0) {
+      return next(new AppError("Insufficient loyalty points", 400));
+    }
 
     const seller = await User.findById(sellerId);
     const lineItems = [];
@@ -930,10 +1067,15 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
       platformFeeType: platformFeeConfig?.type || "none",
       sellerIds: JSON.stringify(sellerIds),
       promoCodeId: promoCodeId || null,
+      useLoyaltyPoints: useLoyaltyPoints ? "true" : "false",
+      loyaltyPointsUsed: pointsToUse.toString(),
+      loyaltyDiscount: loyaltyDiscount.toString(),
     };
 
     console.log("📦 Metadata buyer ID:", userId);
-    console.log("💰 Metadata platform fee:", platformFeeAmount); // ✅ Log
+    console.log("💰 Metadata platform fee:", platformFeeAmount);
+    console.log("🎁 Loyalty points used:", pointsToUse);
+    console.log("💵 Loyalty discount:", loyaltyDiscount);
 
     // 💡 Step 6: Validate line items before creating session
     if (lineItems.length === 0) {
@@ -1066,6 +1208,9 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
       url: session.url,
       breakdown: {
         productsSubtotal: subtotal,
+        promoDiscount: promoDiscount,
+        adminDiscount: adminDiscount,
+        loyaltyDiscount: loyaltyDiscount,
         shippingCost: shippingCost,
         taxAmount: taxAmount,
         platformFee: platformFeeAmount,
@@ -1074,6 +1219,8 @@ export const createCheckoutSession = catchAsync(async (req, res, next) => {
       },
     });
   } catch (error) {
+    console.log(error, "SSSS==>");
+
     return next(new AppError(error.message, 400));
   }
 });
@@ -1468,15 +1615,59 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
 
   // Add loyalty points (use finalBuyerString)
   try {
-    const pointsEarned = Math.floor(totalAmount / 10);
-    if (pointsEarned > 0) {
+    // Check if user has at least 3 orders before giving points
+    const userOrderCount = await Purchase.countDocuments({
+      buyer: finalBuyerString,
+      paymentStatus: "paid",
+    });
+
+    console.log(`💎 Loyalty Points Processing for user ${finalBuyerString}:`);
+    console.log(`   - User order count: ${userOrderCount}`);
+    console.log(`   - Metadata:`, metadata);
+
+    if (userOrderCount >= 3) {
+      // 1 point per $10 spent (customize as needed)
+      const pointsEarned = Math.floor(totalAmount / 10);
+      if (pointsEarned > 0) {
+        await LoyaltyPoint.create({
+          user: finalBuyerString,
+          points: pointsEarned,
+          type: "earn",
+          reason: "purchase",
+          referenceId: orderId,
+        });
+        console.log(`✅ Awarded ${pointsEarned} loyalty points to user ${finalBuyerString}`);
+      }
+    } else {
+      console.log(
+        `Loyalty points not awarded: User ${finalBuyerString} has ${userOrderCount} orders (minimum 3 required).`,
+      );
+    }
+
+    // Deduct loyalty points if used
+    const useLoyaltyPoints = metadata.useLoyaltyPoints === "true";
+    const loyaltyPointsUsed = Number(metadata.loyaltyPointsUsed || 0);
+
+    console.log(`💎 Checking loyalty points deduction:`);
+    console.log(`   - useLoyaltyPoints flag: ${useLoyaltyPoints} (type: ${typeof metadata.useLoyaltyPoints})`);
+    console.log(`   - loyaltyPointsUsed: ${loyaltyPointsUsed}`);
+    console.log(`   - Raw metadata.useLoyaltyPoints: "${metadata.useLoyaltyPoints}"`);
+    console.log(`   - Raw metadata.loyaltyPointsUsed: "${metadata.loyaltyPointsUsed}"`);
+
+    if (useLoyaltyPoints && loyaltyPointsUsed > 0) {
+      console.log(`💎 Creating redeem record...`);
       await LoyaltyPoint.create({
         user: finalBuyerString,
-        points: pointsEarned,
-        type: "earn",
+        points: Math.abs(loyaltyPointsUsed), // Store as positive number
+        type: "redeem",
         reason: "purchase",
         referenceId: orderId,
       });
+      console.log(
+        `✅ Deducted ${loyaltyPointsUsed} loyalty points from user ${finalBuyerString}`,
+      );
+    } else {
+      console.log(`⚠️ Loyalty points NOT deducted - condition not met`);
     }
   } catch (pointsError) {
     console.error("⚠️ Failed to add loyalty points:", pointsError);
@@ -1783,21 +1974,71 @@ const createPurchaseFromPaymentIntent = async (paymentIntent) => {
       }
 
       // ✅ Add Loyalty Points AFTER purchase creation
-      // Example: 1 point per $1 spent (customize as needed)
-      const pointsEarned = Math.floor(totalAmount / 10); // $10 spent = 1 point
-      if (pointsEarned > 0) {
-        await LoyaltyPoint.create(
-          [
-            {
-              user: buyer,
-              points: pointsEarned,
-              type: "earn",
-              reason: "purchase",
-              referenceId: orderId,
-            },
-          ],
-          { session },
-        );
+      try {
+        const userOrderCount = await Purchase.countDocuments({
+          buyer: buyer,
+          paymentStatus: "paid",
+        }).session(session);
+
+        console.log(`💎 Loyalty Points Processing for user ${buyer}:`);
+        console.log(`   - User order count: ${userOrderCount}`);
+        console.log(`   - Metadata:`, metadata);
+
+        if (userOrderCount >= 3) {
+          const pointsEarned = Math.floor(totalAmount / 10); // $10 spent = 1 point
+          if (pointsEarned > 0) {
+            await LoyaltyPoint.create(
+              [
+                {
+                  user: buyer,
+                  points: pointsEarned,
+                  type: "earn",
+                  reason: "purchase",
+                  referenceId: orderId,
+                },
+              ],
+              { session },
+            );
+            console.log(`✅ Awarded ${pointsEarned} loyalty points to user ${buyer}`);
+          }
+        } else {
+          console.log(
+            `ℹ️ Loyalty points not awarded: User ${buyer} has ${userOrderCount} orders (minimum 3 required).`,
+          );
+        }
+
+        // Deduct loyalty points if used
+        const useLoyaltyPoints = metadata.useLoyaltyPoints === "true";
+        const loyaltyPointsUsed = Number(metadata.loyaltyPointsUsed || 0);
+
+        console.log(`💎 Checking loyalty points deduction:`);
+        console.log(`   - useLoyaltyPoints flag: ${useLoyaltyPoints} (type: ${typeof metadata.useLoyaltyPoints})`);
+        console.log(`   - loyaltyPointsUsed: ${loyaltyPointsUsed}`);
+        console.log(`   - Raw metadata.useLoyaltyPoints: "${metadata.useLoyaltyPoints}"`);
+        console.log(`   - Raw metadata.loyaltyPointsUsed: "${metadata.loyaltyPointsUsed}"`);
+
+        if (useLoyaltyPoints && loyaltyPointsUsed > 0) {
+          console.log(`💎 Creating redeem record...`);
+          await LoyaltyPoint.create(
+            [
+              {
+                user: buyer,
+                points: Math.abs(loyaltyPointsUsed), // Store as positive number
+                type: "redeem",
+                reason: "purchase",
+                referenceId: orderId,
+              },
+            ],
+            { session },
+          );
+          console.log(
+            `✅ Deducted ${loyaltyPointsUsed} loyalty points from user ${buyer}`,
+          );
+        } else {
+          console.log(`⚠️ Loyalty points NOT deducted - condition not met`);
+        }
+      } catch (pointsError) {
+        console.error("⚠️ Failed to add loyalty points:", pointsError);
       }
 
       // ✅ Clear cart after successful order
@@ -1933,18 +2174,18 @@ const handleRefund = async (charge) => {
     // ✅ CASE 1: Refund includes specific product/seller info (from createRefund with productId)
     if (refundProductId && refundSellerId) {
       console.log(
-        `📦 Processing seller-specific refund: Product ${refundProductId}, Seller ${refundSellerId}`
+        `📦 Processing seller-specific refund: Product ${refundProductId}, Seller ${refundSellerId}`,
       );
 
       // Find the specific seller's settlement
       const sellerSettlement = settlements.find(
-        s => String(s.sellerId) === String(refundSellerId)
+        (s) => String(s.sellerId) === String(refundSellerId),
       );
 
       if (sellerSettlement) {
         // Find the specific product in this settlement
         const settlementProduct = sellerSettlement.products.find(
-          p => String(p.product) === String(refundProductId)
+          (p) => String(p.product) === String(refundProductId),
         );
 
         if (settlementProduct) {
@@ -1954,21 +2195,23 @@ const handleRefund = async (charge) => {
           settlementProduct.refundedAt = new Date();
 
           // Update settlement refund tracking
-          sellerSettlement.refundDeductions = (sellerSettlement.refundDeductions || 0) + refundAmount;
+          sellerSettlement.refundDeductions =
+            (sellerSettlement.refundDeductions || 0) + refundAmount;
 
           // Calculate commission deduction
           const commissionDeduction =
-            sellerSettlement.commissionAmount * (refundAmount / sellerSettlement.totalOrderAmount);
+            sellerSettlement.commissionAmount *
+            (refundAmount / sellerSettlement.totalOrderAmount);
           sellerSettlement.commissionAmount -= commissionDeduction;
 
           // Update settlement overall refund status - check THIS seller's products only
           const allProductsRefunded = sellerSettlement.products.every(
-            (p) => p.refundStatus === "refunded"
+            (p) => p.refundStatus === "refunded",
           );
           const anyProductsRefunded = sellerSettlement.products.some(
-            (p) => p.refundStatus === "refunded"
+            (p) => p.refundStatus === "refunded",
           );
-          
+
           // Set refundStatus based on this seller's completion
           sellerSettlement.refundStatus = allProductsRefunded
             ? "full"
@@ -1983,10 +2226,12 @@ const handleRefund = async (charge) => {
 
           await sellerSettlement.save();
           console.log(
-            `✅ SellerSettlement updated for seller ${refundSellerId}: refundStatus="${sellerSettlement.refundStatus}", status="${sellerSettlement.status}", allProductsRefunded=${allProductsRefunded}, totalProducts=${sellerSettlement.products.length}`
+            `✅ SellerSettlement updated for seller ${refundSellerId}: refundStatus="${sellerSettlement.refundStatus}", status="${sellerSettlement.status}", allProductsRefunded=${allProductsRefunded}, totalProducts=${sellerSettlement.products.length}`,
           );
         } else {
-          console.error(`❌ Product ${refundProductId} not found in settlement for seller ${refundSellerId}`);
+          console.error(
+            `❌ Product ${refundProductId} not found in settlement for seller ${refundSellerId}`,
+          );
         }
       } else {
         console.error(`❌ Settlement not found for seller ${refundSellerId}`);
@@ -1998,7 +2243,8 @@ const handleRefund = async (charge) => {
 
       for (const settlement of settlements) {
         // Calculate this seller's proportion of the order
-        const sellerProportion = settlement.totalOrderAmount / purchase.totalAmount;
+        const sellerProportion =
+          settlement.totalOrderAmount / purchase.totalAmount;
         const sellerRefundAmount = refundAmount * sellerProportion;
 
         // Update each product in this settlement proportionally
@@ -2010,7 +2256,8 @@ const handleRefund = async (charge) => {
               : 0;
           const productRefundAmount = sellerRefundAmount * productProportion;
 
-          product.refundAmount = (product.refundAmount || 0) + productRefundAmount;
+          product.refundAmount =
+            (product.refundAmount || 0) + productRefundAmount;
           product.refundStatus = "refunded";
           product.refundedAt = new Date();
         }
@@ -2020,7 +2267,8 @@ const handleRefund = async (charge) => {
 
         // Calculate commission deduction
         const commissionDeduction =
-          settlement.commissionAmount * (sellerRefundAmount / settlement.totalOrderAmount);
+          settlement.commissionAmount *
+          (sellerRefundAmount / settlement.totalOrderAmount);
         settlement.commissionAmount -= commissionDeduction;
 
         // Update settlement overall refund status
@@ -2029,7 +2277,7 @@ const handleRefund = async (charge) => {
 
         await settlement.save();
         console.log(
-          `✅ SellerSettlement updated for seller ${settlement.sellerId} (full refund): Deducted $${commissionDeduction}`
+          `✅ SellerSettlement updated for seller ${settlement.sellerId} (full refund): Deducted $${commissionDeduction}`,
         );
       }
     }
@@ -2037,18 +2285,23 @@ const handleRefund = async (charge) => {
     // This happens when customer initiates refund from Stripe dashboard without product details
     // We distribute proportionally but DON'T mark products as fully refunded
     else {
-      console.log(`📦 Processing PARTIAL refund without product info - distributing proportionally`);
+      console.log(
+        `📦 Processing PARTIAL refund without product info - distributing proportionally`,
+      );
 
       for (const settlement of settlements) {
-        const sellerProportion = settlement.totalOrderAmount / purchase.totalAmount;
+        const sellerProportion =
+          settlement.totalOrderAmount / purchase.totalAmount;
         const sellerRefundAmount = refundAmount * sellerProportion;
 
         // Add to refund deductions but DON'T change product refundStatus
         // This tracks the money deducted without marking products as refunded
-        settlement.refundDeductions = (settlement.refundDeductions || 0) + sellerRefundAmount;
+        settlement.refundDeductions =
+          (settlement.refundDeductions || 0) + sellerRefundAmount;
 
         const commissionDeduction =
-          settlement.commissionAmount * (sellerRefundAmount / settlement.totalOrderAmount);
+          settlement.commissionAmount *
+          (sellerRefundAmount / settlement.totalOrderAmount);
         settlement.commissionAmount -= commissionDeduction;
 
         // Mark as partial if there's any refund
@@ -2058,7 +2311,7 @@ const handleRefund = async (charge) => {
 
         await settlement.save();
         console.log(
-          `✅ SellerSettlement updated for seller ${settlement.sellerId} (partial refund): Deducted $${commissionDeduction}`
+          `✅ SellerSettlement updated for seller ${settlement.sellerId} (partial refund): Deducted $${commissionDeduction}`,
         );
       }
     }
@@ -2419,7 +2672,9 @@ export const createRefund = catchAsync(async (req, res, next) => {
       await purchase.save();
     } else {
       if (purchase.status !== "return_requested") {
-        return next(new AppError("Order is not in return_requested status", 400));
+        return next(
+          new AppError("Order is not in return_requested status", 400),
+        );
       }
 
       purchase.status = "return_rejected";
@@ -2479,7 +2734,9 @@ export const createRefund = catchAsync(async (req, res, next) => {
     // Determine the seller for this product
     const productSellerId = String(product.seller || sellerId);
     if (!productSellerId) {
-      return next(new AppError("Seller information not found for this product", 400));
+      return next(
+        new AppError("Seller information not found for this product", 400),
+      );
     }
 
     // Check if already refunded in settlement
@@ -2498,14 +2755,16 @@ export const createRefund = catchAsync(async (req, res, next) => {
     }
 
     // Calculate refund amount (default to product price * quantity)
-    const productRefundAmount = amount || (product.price * product.quantity);
-    const isFullProductRefund = productRefundAmount >= (product.price * product.quantity);
+    const productRefundAmount = amount || product.price * product.quantity;
+    const isFullProductRefund =
+      productRefundAmount >= product.price * product.quantity;
 
     // Get platform fee information
     const platformFeeAmount = purchase.platformFeeAmount || 0;
-    const productProportion = purchase.totalAmount > 0
-      ? (product.price * product.quantity) / purchase.totalAmount
-      : 0;
+    const productProportion =
+      purchase.totalAmount > 0
+        ? (product.price * product.quantity) / purchase.totalAmount
+        : 0;
     const platformFeeRefund = platformFeeAmount * productProportion;
 
     // 3. Create refund in Stripe
@@ -2538,11 +2797,13 @@ export const createRefund = catchAsync(async (req, res, next) => {
       }
 
       // Update settlement refund tracking
-      settlement.refundDeductions = (settlement.refundDeductions || 0) + productRefundAmount;
+      settlement.refundDeductions =
+        (settlement.refundDeductions || 0) + productRefundAmount;
 
       // Calculate commission deduction
       const commissionDeduction =
-        settlement.commissionAmount * (productRefundAmount / settlement.totalOrderAmount);
+        settlement.commissionAmount *
+        (productRefundAmount / settlement.totalOrderAmount);
       settlement.commissionAmount -= commissionDeduction;
 
       // Update settlement overall refund status - check THIS seller's products only
@@ -2552,7 +2813,7 @@ export const createRefund = catchAsync(async (req, res, next) => {
       const anyProductsRefunded = settlement.products.some(
         (p) => p.refundStatus === "refunded",
       );
-      
+
       // Set refundStatus based on this seller's completion
       settlement.refundStatus = allProductsRefunded
         ? "full"
@@ -2566,15 +2827,17 @@ export const createRefund = catchAsync(async (req, res, next) => {
       }
 
       await settlement.save();
-      
+
       console.log(
-        `✅ SellerSettlement updated for seller ${productSellerId}: refundStatus="${settlement.refundStatus}", status="${settlement.status}", allProductsRefunded=${allProductsRefunded}, totalProducts=${settlement.products.length}`
+        `✅ SellerSettlement updated for seller ${productSellerId}: refundStatus="${settlement.refundStatus}", status="${settlement.status}", allProductsRefunded=${allProductsRefunded}, totalProducts=${settlement.products.length}`,
       );
     }
 
     // 5. Update purchase timeline
     purchase.orderTimeline.push({
-      event: isFullProductRefund ? "Product Refund Approved" : "Partial Product Refund Approved",
+      event: isFullProductRefund
+        ? "Product Refund Approved"
+        : "Partial Product Refund Approved",
       timestamp: new Date(),
       location: "Admin/Seller",
       notes: `Reason: ${reason || "Manual Refund"}, Product: ${String(product.product)}, Amount: $${productRefundAmount.toFixed(2)}`,
@@ -2645,12 +2908,17 @@ export const createRefund = catchAsync(async (req, res, next) => {
 
     for (const product of settlement.products) {
       product.refundStatus = "refunded";
-      product.refundAmount = sellerRefundAmount * ((product.price * product.quantity) / settlement.totalOrderAmount);
+      product.refundAmount =
+        sellerRefundAmount *
+        ((product.price * product.quantity) / settlement.totalOrderAmount);
       product.refundedAt = new Date();
     }
 
-    settlement.refundDeductions = (settlement.refundDeductions || 0) + sellerRefundAmount;
-    const commissionDeduction = settlement.commissionAmount * (sellerRefundAmount / settlement.totalOrderAmount);
+    settlement.refundDeductions =
+      (settlement.refundDeductions || 0) + sellerRefundAmount;
+    const commissionDeduction =
+      settlement.commissionAmount *
+      (sellerRefundAmount / settlement.totalOrderAmount);
     settlement.commissionAmount -= commissionDeduction;
     settlement.refundStatus = "full";
     settlement.status = "refunded";
@@ -2661,7 +2929,8 @@ export const createRefund = catchAsync(async (req, res, next) => {
   // Update Purchase Record
   purchase.paymentStatus = isPartial ? "partially_refunded" : "refunded";
   purchase.refundedAt = new Date();
-  purchase.platformFeeRefunded = (purchase.platformFeeRefunded || 0) + platformFeeRefund;
+  purchase.platformFeeRefunded =
+    (purchase.platformFeeRefunded || 0) + platformFeeRefund;
 
   purchase.orderTimeline.push({
     event: isPartial ? "Partial Refund Approved" : "Full Refund Approved",

@@ -233,9 +233,29 @@ export const getCustomerDashboardStats = catchAsync(async (req, res, next) => {
     prevSpent === 0 ? 100 : ((totalSpent - prevSpent) / prevSpent) * 100;
 
   // ==================== 3️⃣ LOYALTY POINTS ====================
+  // Calculate loyalty points by summing earned points and subtracting redeemed points
   const loyaltyResult = await LoyaltyPoint.aggregate([
-    { $match: { user: userId } },
-    { $group: { _id: null, totalPoints: { $sum: "$points" } } },
+    { $match: { user: userIdString } },
+    {
+      $group: {
+        _id: null,
+        earnedPoints: {
+          $sum: {
+            $cond: [{ $eq: ["$type", "earn"] }, "$points", 0]
+          }
+        },
+        redeemedPoints: {
+          $sum: {
+            $cond: [{ $eq: ["$type", "redeem"] }, { $abs: "$points" }, 0]
+          }
+        }
+      }
+    },
+    {
+      $project: {
+        totalPoints: { $subtract: ["$earnedPoints", "$redeemedPoints"] }
+      }
+    }
   ]);
 
   const loyaltyPoints =

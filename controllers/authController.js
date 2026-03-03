@@ -25,7 +25,7 @@ const createSendToken = (user, statusCode, res) => {
   const token = signToken(user);
   const cookieOptions = {
     expires: new Date(
-      Date.now() + process.env.JWT_COOKIE_EXPIRES_IN * 24 * 60 * 60 * 1000
+      Date.now() + process.env.JWT_COOKIE_EXPIRES_IN * 24 * 60 * 60 * 1000,
     ),
     httpOnly: true,
   };
@@ -48,7 +48,7 @@ export const signup = catchAsync(async (req, res, next) => {
   try {
     // 1️⃣ Check if user already exists
     const user_info = await User.findOne({ email: req.body.email }).session(
-      session
+      session,
     );
     if (user_info) {
       throw new AppError("Email already exists.", 400);
@@ -61,7 +61,7 @@ export const signup = catchAsync(async (req, res, next) => {
       if (businessExists) {
         throw new AppError(
           "Business name already exists. Please choose a different one.",
-          400
+          400,
         );
       }
     }
@@ -115,9 +115,15 @@ export const signup = catchAsync(async (req, res, next) => {
       let coordinates = [0, 0];
       if (req.body.location && req.body.location.coordinates) {
         coordinates = req.body.location.coordinates;
-      } else if (req.body.longitude !== undefined && req.body.latitude !== undefined) {
+      } else if (
+        req.body.longitude !== undefined &&
+        req.body.latitude !== undefined
+      ) {
         // Alternative: accept longitude and latitude as separate fields
-        coordinates = [parseFloat(req.body.longitude), parseFloat(req.body.latitude)];
+        coordinates = [
+          parseFloat(req.body.longitude),
+          parseFloat(req.body.latitude),
+        ];
       }
 
       await Farm.create(
@@ -135,7 +141,7 @@ export const signup = catchAsync(async (req, res, next) => {
             products: [],
           },
         ],
-        { session }
+        { session },
       );
     }
 
@@ -168,7 +174,7 @@ export const protect = catchAsync(async (req, res, next) => {
 
   if (!token) {
     return next(
-      new AppError("you are not looged in! please login to get access.", 401)
+      new AppError("you are not looged in! please login to get access.", 401),
     );
   }
   //2) Verification token
@@ -180,14 +186,14 @@ export const protect = catchAsync(async (req, res, next) => {
     return next(
       new AppError(
         "The user belonging to this token does no longer exist.",
-        401
-      )
+        401,
+      ),
     );
   }
   //Checkif user changed password after the token was issued
   if (freshUser.changedPasswordAfter(decoded.iat)) {
     return next(
-      new AppError("User recently changed password Please log in again", 401)
+      new AppError("User recently changed password Please log in again", 401),
     );
   }
   req.user = freshUser;
@@ -220,20 +226,20 @@ export const optionalProtect = catchAsync(async (req, res, next) => {
       // User doesn't exist - allow request to proceed without req.user
       return next();
     }
-    
+
     //Check if user changed password after the token was issued
     if (freshUser.changedPasswordAfter(decoded.iat)) {
       // Token invalid - allow request to proceed without req.user
       return next();
     }
-    
+
     req.user = freshUser;
     res.locals.user = freshUser;
   } catch (err) {
     // Token invalid - allow request to proceed without req.user
     // Don't throw error, just continue
   }
-  
+
   return next();
 });
 
@@ -249,8 +255,8 @@ export const forgotPassword = catchAsync(async (req, res, next) => {
     return next(
       new AppError(
         "Your account is linked with Google. Please use Google to log in.",
-        403
-      )
+        403,
+      ),
     );
   }
   // if account is linked with Facebook
@@ -258,8 +264,8 @@ export const forgotPassword = catchAsync(async (req, res, next) => {
     return next(
       new AppError(
         "Your account is linked with Facebook. Please use Facebook to log in.",
-        403
-      )
+        403,
+      ),
     );
   }
 
@@ -272,7 +278,7 @@ export const forgotPassword = catchAsync(async (req, res, next) => {
 
   try {
     const resetURL = `${req.protocol}://${req.get(
-      "host"
+      "host",
     )}/api/users/resetPassword/${resetToken}`;
     const baseUrl = `${req.protocol}://${req.get("host")}`;
     await new Email(user, resetURL, baseUrl).sendPasswordReset();
@@ -288,7 +294,10 @@ export const forgotPassword = catchAsync(async (req, res, next) => {
     await user.save({ validateBeforeSave: false });
 
     return next(
-      new AppError("There was an error sending the email. Try again later", 500)
+      new AppError(
+        "There was an error sending the email. Try again later",
+        500,
+      ),
     );
   }
 });
@@ -342,6 +351,8 @@ export const updatePassword = catchAsync(async (req, res, next) => {
 
   // 4️⃣ Check if current password is correct
   const isMatch = await user.correctPassword(currentPassword, user.password);
+  console.log(isMatch, currentPassword, user.password);
+
   if (!isMatch) {
     return next(new AppError("Your current password is incorrect", 401));
   }
@@ -349,7 +360,7 @@ export const updatePassword = catchAsync(async (req, res, next) => {
   // 5️⃣ Check if newPassword matches confirm
   if (newPassword !== passwordConfirm) {
     return next(
-      new AppError("New password and confirm password do not match", 400)
+      new AppError("New password and confirm password do not match", 400),
     );
   }
 
@@ -397,7 +408,7 @@ export const login = catchAsync(async (req, res, next) => {
   // ---------------- Email & Password ----------------
   if (email && password) {
     let user = await User.findOne({ email }).select(
-      "+password +twoFactorEnabled +twoFactorMethod +twoFactorSecret"
+      "+password +twoFactorEnabled +twoFactorMethod +twoFactorSecret",
     );
     if (!user) return next(new AppError("User not found", 404));
 
@@ -444,7 +455,7 @@ export const login = catchAsync(async (req, res, next) => {
 export const verifyTwoFactor = catchAsync(async (req, res, next) => {
   const { userId, token } = req.body;
   const user = await User.findById(userId).select(
-    "+twoFactorEnabled +twoFactorMethod +twoFactorSecret +twoFactorTempToken +twoFactorTempExpires"
+    "+twoFactorEnabled +twoFactorMethod +twoFactorSecret +twoFactorTempToken +twoFactorTempExpires",
   );
   if (!user) return next(new AppError("User not found", 404));
 
@@ -454,7 +465,7 @@ export const verifyTwoFactor = catchAsync(async (req, res, next) => {
   if (user.twoFactorMethod === "authenticator") {
     // Convert token to string if it's a number
     const tokenString = String(token).trim();
-    
+
     // Verify with window to handle clock skew (accept codes from previous/next time step)
     const verified = speakeasy.totp.verify({
       secret: user.twoFactorSecret,
@@ -462,9 +473,14 @@ export const verifyTwoFactor = catchAsync(async (req, res, next) => {
       token: tokenString,
       window: 2, // Accept codes from 2 time steps before and after (60 seconds total window)
     });
-    
+
     if (!verified) {
-      return next(new AppError("Invalid 2FA code. Please make sure your device time is synchronized.", 401));
+      return next(
+        new AppError(
+          "Invalid 2FA code. Please make sure your device time is synchronized.",
+          401,
+        ),
+      );
     }
   } else {
     if (
@@ -548,7 +564,7 @@ export const enableTwoFactor = catchAsync(async (req, res, next) => {
 export const confirmTwoFactorSetup = catchAsync(async (req, res, next) => {
   const { token } = req.body; // userId আর লাগবে না
   const user = await User.findById(req.user._id).select(
-    "+twoFactorMethod +twoFactorSecret +twoFactorTempToken +twoFactorTempExpires +twoFactorEnabled"
+    "+twoFactorMethod +twoFactorSecret +twoFactorTempToken +twoFactorTempExpires +twoFactorEnabled",
   );
 
   if (!user) return next(new AppError("User not found", 404));
@@ -556,17 +572,21 @@ export const confirmTwoFactorSetup = catchAsync(async (req, res, next) => {
   if (user.twoFactorMethod === "authenticator") {
     // Check if secret exists
     if (!user.twoFactorSecret) {
-      return next(new AppError("2FA secret not found. Please enable 2FA again.", 400));
+      return next(
+        new AppError("2FA secret not found. Please enable 2FA again.", 400),
+      );
     }
-    
+
     // Convert token to string if it's a number
     const tokenString = String(token).trim();
-    
+
     // Validate token format (should be 6 digits)
     if (!/^\d{6}$/.test(tokenString)) {
-      return next(new AppError("Invalid code format. Please enter a 6-digit code.", 400));
+      return next(
+        new AppError("Invalid code format. Please enter a 6-digit code.", 400),
+      );
     }
-    
+
     // Verify with window to handle clock skew (accept codes from previous/next time step)
     const verified = speakeasy.totp.verify({
       secret: user.twoFactorSecret,
@@ -574,7 +594,7 @@ export const confirmTwoFactorSetup = catchAsync(async (req, res, next) => {
       token: tokenString,
       window: 2, // Accept codes from 2 time steps before and after (60 seconds total window)
     });
-    
+
     if (!verified) {
       console.error("2FA verification failed:", {
         hasSecret: !!user.twoFactorSecret,
@@ -582,7 +602,12 @@ export const confirmTwoFactorSetup = catchAsync(async (req, res, next) => {
         token: tokenString,
         method: user.twoFactorMethod,
       });
-      return next(new AppError("Invalid authenticator code. Please make sure your device time is synchronized and try again.", 401));
+      return next(
+        new AppError(
+          "Invalid authenticator code. Please make sure your device time is synchronized and try again.",
+          401,
+        ),
+      );
     }
   } else {
     if (

@@ -21,6 +21,11 @@ const promoCodeSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    sellerId: {
+      type: String,
+      ref: "User",
+      required: true,
+    },
     usageLimit: {
       // Maximum total uses
       type: Number,
