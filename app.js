@@ -61,6 +61,8 @@ import adminSettlementRoutes from "./routes/admin/adminSettlementRoutes.js";
 import adminLogsRoutes from "./routes/admin/adminLogsRoutes.js";
 import adminSellerOrdersRoutes from "./routes/admin/adminSellerOrdersRoutes.js";
 import blogPublicRoutes from "./routes/common/blogPublicRoutes.js";
+import chatRoutes from "./routes/common/chatRoutes.js";
+import adminNotificationRoutes from "./routes/admin/adminNotificationRoutes.js";
 
 // =====================
 // __dirname setup
@@ -181,6 +183,7 @@ app.use("/api/admin/platform-fee", adminPlatformFeeRoute);
 app.use("/api/admin/dashboard", adminDashboardRoute);
 app.use("/api/admin/logs", adminLogsRoutes);
 app.use("/api/admin/seller-orders", adminSellerOrdersRoutes);
+app.use("/api/admin/notifications", adminNotificationRoutes);
 
 // Blog Routes
 app.use("/api/admin/blog-categories", adminBlogCategoryRoutes);
@@ -188,6 +191,9 @@ app.use("/api/admin/blogs", adminBlogRoutes);
 app.use("/api/admin/media", adminMediaRoutes);
 app.use("/api/admin/settlements", adminSettlementRoutes);
 app.use("/api/blogs", blogPublicRoutes);
+
+// Chat Routes
+app.use("/api/chat", chatRoutes);
 
 // =====================
 // Swagger UI

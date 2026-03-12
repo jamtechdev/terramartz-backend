@@ -276,7 +276,7 @@ export const calculateOrderBreakdown = async (
     // Fetch user's loyalty point balance
     const userIdString = String(user.id || user._id);
     const loyaltyRecords = await LoyaltyPoint.find({ user: userIdString });
-    
+
     // Calculate balance: sum earned points, subtract redeemed points
     const balance = loyaltyRecords.reduce((sum, record) => {
       if (record.type === "earn") {
@@ -803,7 +803,9 @@ export const webhookPayment = async (req, res, next) => {
               reason: "purchase",
               referenceId: orderId,
             });
-            console.log(`✅ Awarded ${pointsEarned} loyalty points to user ${buyer}`);
+            console.log(
+              `✅ Awarded ${pointsEarned} loyalty points to user ${buyer}`,
+            );
           }
         } else {
           console.log(
@@ -816,10 +818,16 @@ export const webhookPayment = async (req, res, next) => {
         const loyaltyPointsUsed = Number(metadata.loyaltyPointsUsed || 0);
 
         console.log(`💎 Checking loyalty points deduction:`);
-        console.log(`   - useLoyaltyPoints flag: ${useLoyaltyPoints} (type: ${typeof metadata.useLoyaltyPoints})`);
+        console.log(
+          `   - useLoyaltyPoints flag: ${useLoyaltyPoints} (type: ${typeof metadata.useLoyaltyPoints})`,
+        );
         console.log(`   - loyaltyPointsUsed: ${loyaltyPointsUsed}`);
-        console.log(`   - Raw metadata.useLoyaltyPoints: "${metadata.useLoyaltyPoints}"`);
-        console.log(`   - Raw metadata.loyaltyPointsUsed: "${metadata.loyaltyPointsUsed}"`);
+        console.log(
+          `   - Raw metadata.useLoyaltyPoints: "${metadata.useLoyaltyPoints}"`,
+        );
+        console.log(
+          `   - Raw metadata.loyaltyPointsUsed: "${metadata.loyaltyPointsUsed}"`,
+        );
 
         if (useLoyaltyPoints && loyaltyPointsUsed > 0) {
           console.log(`💎 Creating redeem record...`);
@@ -1291,8 +1299,8 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
   const existingOrder = await Purchase.findOne({
     $or: [
       { checkoutSessionId: sessionId },
-      { paymentIntentId: session.payment_intent }
-    ]
+      { paymentIntentId: session.payment_intent },
+    ],
   });
 
   // Also check by buyer if order found
@@ -1639,7 +1647,9 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
           reason: "purchase",
           referenceId: orderId,
         });
-        console.log(`✅ Awarded ${pointsEarned} loyalty points to user ${finalBuyerString}`);
+        console.log(
+          `✅ Awarded ${pointsEarned} loyalty points to user ${finalBuyerString}`,
+        );
       }
     } else {
       console.log(
@@ -1652,10 +1662,16 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
     const loyaltyPointsUsed = Number(metadata.loyaltyPointsUsed || 0);
 
     console.log(`💎 Checking loyalty points deduction:`);
-    console.log(`   - useLoyaltyPoints flag: ${useLoyaltyPoints} (type: ${typeof metadata.useLoyaltyPoints})`);
+    console.log(
+      `   - useLoyaltyPoints flag: ${useLoyaltyPoints} (type: ${typeof metadata.useLoyaltyPoints})`,
+    );
     console.log(`   - loyaltyPointsUsed: ${loyaltyPointsUsed}`);
-    console.log(`   - Raw metadata.useLoyaltyPoints: "${metadata.useLoyaltyPoints}"`);
-    console.log(`   - Raw metadata.loyaltyPointsUsed: "${metadata.loyaltyPointsUsed}"`);
+    console.log(
+      `   - Raw metadata.useLoyaltyPoints: "${metadata.useLoyaltyPoints}"`,
+    );
+    console.log(
+      `   - Raw metadata.loyaltyPointsUsed: "${metadata.loyaltyPointsUsed}"`,
+    );
 
     if (useLoyaltyPoints && loyaltyPointsUsed > 0) {
       console.log(`💎 Creating redeem record...`);
@@ -2002,7 +2018,9 @@ const createPurchaseFromPaymentIntent = async (paymentIntent) => {
               ],
               { session },
             );
-            console.log(`✅ Awarded ${pointsEarned} loyalty points to user ${buyer}`);
+            console.log(
+              `✅ Awarded ${pointsEarned} loyalty points to user ${buyer}`,
+            );
           }
         } else {
           console.log(
@@ -2015,10 +2033,16 @@ const createPurchaseFromPaymentIntent = async (paymentIntent) => {
         const loyaltyPointsUsed = Number(metadata.loyaltyPointsUsed || 0);
 
         console.log(`💎 Checking loyalty points deduction:`);
-        console.log(`   - useLoyaltyPoints flag: ${useLoyaltyPoints} (type: ${typeof metadata.useLoyaltyPoints})`);
+        console.log(
+          `   - useLoyaltyPoints flag: ${useLoyaltyPoints} (type: ${typeof metadata.useLoyaltyPoints})`,
+        );
         console.log(`   - loyaltyPointsUsed: ${loyaltyPointsUsed}`);
-        console.log(`   - Raw metadata.useLoyaltyPoints: "${metadata.useLoyaltyPoints}"`);
-        console.log(`   - Raw metadata.loyaltyPointsUsed: "${metadata.loyaltyPointsUsed}"`);
+        console.log(
+          `   - Raw metadata.useLoyaltyPoints: "${metadata.useLoyaltyPoints}"`,
+        );
+        console.log(
+          `   - Raw metadata.loyaltyPointsUsed: "${metadata.loyaltyPointsUsed}"`,
+        );
 
         if (useLoyaltyPoints && loyaltyPointsUsed > 0) {
           console.log(`💎 Creating redeem record...`);

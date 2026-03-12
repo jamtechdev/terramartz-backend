@@ -78,6 +78,12 @@ export const getSellerCompleteAnalytics = catchAsync(async (req, res, next) => {
     matchPurchase.createdAt = {};
     if (start) matchPurchase.createdAt.$gte = start;
     if (end) matchPurchase.createdAt.$lte = end;
+  } else {
+    // Filter by selected year when no explicit date range is provided
+    matchPurchase.createdAt = {
+      $gte: new Date(`${selectedYear}-01-01T00:00:00.000Z`),
+      $lte: new Date(`${selectedYear}-12-31T23:59:59.999Z`),
+    };
   }
 
   // console.log("\n========== SELLER COMPLETE ANALYTICS ==========");
