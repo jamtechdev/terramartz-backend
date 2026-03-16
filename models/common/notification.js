@@ -21,6 +21,7 @@ const notificationSchema = new mongoose.Schema(
         "payment_received", // Seller gets when payment is received
         "order_delivered", // Buyer gets when order is delivered
         "order_cancelled", // Both get when order is cancelled
+        "low_stock", // Seller gets when product stock falls below inventory alert threshold
       ],
       required: true,
     },

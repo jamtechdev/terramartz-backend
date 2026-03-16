@@ -15,6 +15,7 @@ import { LoyaltyPoint } from "./../../models/customers/loyaltyPoints.js";
 import { PlatformFee } from "../../models/super-admin/platformFee.js";
 import { SellerSettlement } from "../../models/seller/sellerSettlement.js";
 import { calculateSettlementDate } from "../../utils/settlementHelper.js";
+import { checkInventoryAlert } from "../../utils/inventoryAlertHelper.js";
 
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
@@ -667,6 +668,10 @@ export const webhookPayment = async (req, res, next) => {
         await Product.findByIdAndUpdate(item.product, {
           $inc: { stockQuantity: -item.quantity },
         });
+
+        // Check inventory alert after stock decrement
+        const updatedStock = product.stockQuantity - item.quantity;
+        await checkInventoryAlert(item.product, { currentStock: updatedStock });
 
         // Purchase model expects seller as String, so convert to String
         const finalSellerId = String(product.createdBy || product.seller);
@@ -1454,6 +1459,10 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
       $inc: { stockQuantity: -item.quantity },
     });
 
+    // Check inventory alert after stock decrement
+    const updatedStock = product.stockQuantity - item.quantity;
+    await checkInventoryAlert(item.product, { currentStock: updatedStock });
+
     // Purchase model expects seller as String, so convert to String
     const finalSellerId = String(sellerId);
     console.log(
@@ -1873,6 +1882,13 @@ const createPurchaseFromPaymentIntent = async (paymentIntent) => {
           throw new Error(
             `Insufficient stock or write conflict for ${item.product}`,
           );
+
+        // Check inventory alert after stock decrement (product.stockQuantity is already updated since { new: true })
+        await checkInventoryAlert(item.product, {
+          session,
+          currentStock: product.stockQuantity,
+          productDoc: product,
+        });
 
         // ✅ Update ProductPerformance with final paid price
         const perf = await ProductPerformance.findOne({

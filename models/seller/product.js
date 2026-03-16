@@ -70,6 +70,11 @@ const productSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    inventoryAlert: {
+      type: Number,
+      default: 0, // 0 means disabled; any positive number is the threshold
+      min: [0, "Inventory alert threshold cannot be negative"],
+    },
     discount: { type: Number, default: 0 },
     discountType: {
       type: String,

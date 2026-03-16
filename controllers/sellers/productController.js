@@ -320,6 +320,7 @@ export const updateProduct = catchAsync(async (req, res, next) => {
     product.price = req.body.price || product.price;
     product.stockQuantity = req.body.stockQuantity ?? product.stockQuantity;
     product.category = req.body.category || product.category;
+    product.inventoryAlert = req.body.inventoryAlert ?? product.inventoryAlert;
     if (req.body.productImages) product.productImages = req.body.productImages;
 
     await product.save({ session });
