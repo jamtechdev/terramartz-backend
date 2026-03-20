@@ -7,7 +7,7 @@ import { Purchase } from "../../models/customers/purchase.js";
 import { User } from "../../models/users.js";
 import { TaxConfig } from "../../models/super-admin/taxWithAdminDiscountConfig.js";
 import { ProductPerformance } from "../../models/seller/productPerformance.js";
-import { PromoCode } from "../../models/seller/promoCodes.js";
+import { PromoCode } from "../../models/super-admin/promoCodes.js";
 import { CustomerPromoCodeUse } from "../../models/customers/customerPromoCodeUse.js";
 import catchAsync from "../../utils/catchasync.js";
 import AppError from "../../utils/apperror.js";
@@ -188,70 +188,37 @@ export const calculateOrderBreakdown = async (
   let promoCodeId = null;
 
   if (promoCode) {
-    // 💡 Search for the promo code globally first to identify its owner
     const matchedPromo = await PromoCode.findOne({
       code: promoCode.trim(),
       isActive: true,
     });
 
-    console.log(matchedPromo, "matchedPromo==>");
-    console.log(matchedPromo.sellerId, "matchedPromo.sellerId==>");
-
     if (matchedPromo) {
-      // ✅ Check if ALL products in the cart belong to this promo code's seller
-      // Use String conversion for reliable comparison
-      const promoSellerIdStr = matchedPromo.sellerId.toString();
+      const now = new Date();
+      const notExpired =
+        !matchedPromo.expiresAt || new Date(matchedPromo.expiresAt) >= now;
+      const meetsMinAmount = subtotal >= (matchedPromo.minOrderAmount || 0);
+      const withinUsageLimit =
+        !matchedPromo.usageLimit ||
+        matchedPromo.usedCount < matchedPromo.usageLimit;
 
-      console.log(
-        `🔍 [calculateOrderBreakdown] Checking products for promo owner: ${promoSellerIdStr}`,
-      );
+      let withinUserLimit = true;
+      if (user && user.id) {
+        const userUsageCount = await CustomerPromoCodeUse.countDocuments({
+          user_id: user.id,
+          promoCodeId: matchedPromo._id,
+          purchase_id: { $ne: null },
+        });
+        withinUserLimit = userUsageCount < (matchedPromo.perUserLimit || 1);
+      }
 
-      const allProductsFromPromoSeller = productDetailsArr.every((p, idx) => {
-        const prodSellerId =
-          p.product.createdBy?.toString() || p.product.seller?.toString();
-        const matches = prodSellerId === promoSellerIdStr;
-        console.log(
-          `   - Product [${idx}] ID: ${p.product._id}, createdBy: ${prodSellerId}, Matches: ${matches}`,
-        );
-        return matches;
-      });
-
-      if (!allProductsFromPromoSeller) {
-        // If products are from different sellers, this specific seller coupon cannot be applied
-        console.log(
-          `🚫 Promo code ${promoCode} rejected: Not all products belong to seller ${promoSellerIdStr}`,
-        );
-      } else {
-        const now = new Date();
-        const notExpired =
-          !matchedPromo.expiresAt || new Date(matchedPromo.expiresAt) >= now;
-        const meetsMinAmount = subtotal >= (matchedPromo.minOrderAmount || 0);
-        const withinUsageLimit =
-          !matchedPromo.usageLimit ||
-          matchedPromo.usedCount < matchedPromo.usageLimit;
-
-        let withinUserLimit = true;
-        if (user && user.id) {
-          const userUsageCount = await CustomerPromoCodeUse.countDocuments({
-            user_id: user.id,
-            promoCodeId: matchedPromo._id,
-            purchase_id: { $ne: null },
-          });
-          withinUserLimit = userUsageCount < (matchedPromo.perUserLimit || 1);
-        }
-
-        if (
-          notExpired &&
-          meetsMinAmount &&
-          withinUsageLimit &&
-          withinUserLimit
-        ) {
-          promoDiscount =
-            matchedPromo.type === "fixed"
-              ? matchedPromo.discount
-              : (subtotal * matchedPromo.discount) / 100;
-          promoCodeId = matchedPromo._id;
-        }
+      if (notExpired && meetsMinAmount && withinUsageLimit && withinUserLimit) {
+        // Apply discount to the full cart subtotal (admin-created codes are global)
+        promoDiscount =
+          matchedPromo.type === "fixed"
+            ? matchedPromo.discount
+            : (subtotal * matchedPromo.discount) / 100;
+        promoCodeId = matchedPromo._id;
       }
     }
   }

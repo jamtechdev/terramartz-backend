@@ -6,7 +6,7 @@ import {
   getDirectUrl,
 } from "../../utils/awsS3.js";
 import { User } from "../../models/users.js";
-import { PromoCode } from "../../models/seller/promoCodes.js";
+import { PromoCode } from "../../models/super-admin/promoCodes.js";
 import { Farm } from "../../models/seller/farm.js";
 import { Product } from "../../models/seller/product.js";
 

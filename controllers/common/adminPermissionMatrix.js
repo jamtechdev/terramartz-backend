@@ -12,6 +12,7 @@ export const ROLE_PERMISSIONS = {
     Support: "Full",
     Marketing: "Full",
     Blogs: "Full",
+    "Promo Codes": "Full",
     Settings: "Full",
   },
   Ops: {
@@ -26,6 +27,7 @@ export const ROLE_PERMISSIONS = {
     Support: "View",
     Marketing: "View",
     Blogs: "View",
+    "Promo Codes": "No",
     Settings: "No",
   },
   Finance: {
@@ -41,6 +43,7 @@ export const ROLE_PERMISSIONS = {
     Marketing: "No",
     Blogs: "View",
     Settings: "No",
+    "Promo Codes": "Full",
   },
   Logistics: {
     Dashboard: "View",
@@ -55,6 +58,7 @@ export const ROLE_PERMISSIONS = {
     Marketing: "No",
     Blogs: "View",
     Settings: "No",
+    "Promo Codes": "No",
   },
   Support: {
     Dashboard: "View",
@@ -69,6 +73,7 @@ export const ROLE_PERMISSIONS = {
     Marketing: "No",
     Blogs: "View",
     Settings: "No",
+    "Promo Codes": "No",
   },
   "Read-Only": {
     Dashboard: "View",
@@ -83,5 +88,6 @@ export const ROLE_PERMISSIONS = {
     Marketing: "View",
     Blogs: "View",
     Settings: "No",
+    "Promo Codes": "No",
   },
 };

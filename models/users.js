@@ -175,20 +175,6 @@ const userSchema = new mongoose.Schema(
 
       shippingCharges: { type: Number, default: 0 }, // seller set করবে
       freeShippingThreshold: { type: Number, default: 0 }, // seller set করবে
-      promoCodes: [
-        {
-          code: { type: String, trim: true },
-          discount: { type: Number, default: 0 },
-          expiresAt: Date,
-          minOrderAmount: { type: Number, default: 0 },
-          type: {
-            type: String,
-            enum: ["fixed", "percentage"], // শুধুমাত্র এই দুইটি value অনুমোদিত
-            required: true,
-            default: "fixed",
-          },
-        },
-      ],
       // Stripe Connect fields
       stripeAccountId: {
         type: String,

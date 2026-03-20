@@ -21,9 +21,9 @@ const promoCodeSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
-    sellerId: {
+    createdBy: {
       type: String,
-      ref: "User",
+      ref: "Admin",
       required: true,
     },
     usageLimit: {
@@ -45,7 +45,7 @@ const promoCodeSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
-// Add indexes for better performance
-promoCodeSchema.index({ code: 1, sellerId: 1 }, { unique: true });
+// code is globally unique (admin-created codes are not scoped to a seller)
+promoCodeSchema.index({ code: 1 }, { unique: true });
 promoCodeSchema.index({ isActive: 1, expiresAt: 1 });
 export const PromoCode = mongoose.model("PromoCode", promoCodeSchema);
