@@ -206,6 +206,7 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
           quantity: 1,
           price: 1,
           seller: 1,
+          status: 1,
           performance: 1,
           // productInfo is now already extracted as an object
           productInfo: {
@@ -456,48 +457,49 @@ export const updateOrderStatus = catchAsync(async (req, res, next) => {
     return next(new AppError("You cannot update this product", 403));
 
   // ❗️3️⃣ PREVENT SAME STATUS UPDATE AGAIN
-  const latestEvent = product.timeline?.[product.timeline.length - 1]?.event;
-  if (latestEvent === status) {
+  if (product.status === status) {
     return next(
       new AppError(`Status "${status}" is already applied earlier!`, 400),
     );
   }
 
-  // 4️⃣ Update product timeline (individual timeline)
+  // 4️⃣ Update product status and timeline (individual per seller)
+  product.status = status;
   product.timeline.push({
     event: status,
     timestamp: new Date(),
     location: location || "Seller Hub",
   });
 
-  // 4.5️⃣ 🔥 GLOBAL ORDER TIMELINE UPDATE (top level)
+  // 4.5️⃣ 🔥 GLOBAL ORDER TIMELINE UPDATE (top level) - include seller and product info
   order.orderTimeline.push({
     event: status,
     timestamp: new Date(),
     location: location || "Seller Hub",
+    seller: sellerId,
+    product: productId,
+    note: `Seller ${sellerId} updated product ${productId} to "${status}"`,
   });
 
-  // 5️⃣ Update overall order status
-  const allDelivered = order.products.every(
-    (p) => p.timeline[p.timeline.length - 1].event === "delivered",
-  );
+  // 5️⃣ Update overall order status (aggregate based on ALL products)
+  // In multi-vendor app, overall status reflects the collective state
+  const allDelivered = order.products.every((p) => p.status === "delivered");
+  const anyShipped = order.products.some((p) => p.status === "shipped");
+  const anyInTransit = order.products.some((p) => p.status === "in_transit");
 
   if (allDelivered) {
     order.status = "delivered";
-  } else if (
-    order.products.some((p) =>
-      ["shipped"].includes(
-        p.timeline[p.timeline.length - 1].event,
-      ),
-    )
-  ) {
+  } else if (anyInTransit) {
+    order.status = "in_transit";
+  } else if (anyShipped) {
     order.status = "shipped";
-  } else {
-    order.status = status;
   }
+  // Removed: else { order.status = status; }
+  // Order status should NOT be directly set to a single seller's status
+  // It should only reflect the aggregate state of all products
 
-  // 6️⃣ OLD CODE — KEEP IT AS IS (NO REMOVE 🔄)
-  if (deliveryTime) {
+  // 6️⃣ Delivery Time - only set if not already set (prevent seller override in multi-vendor)
+  if (deliveryTime && !order.shippingAddress.deliveryTime) {
     order.shippingAddress.deliveryTime = new Date(deliveryTime);
   } else if (!order.shippingAddress.deliveryTime) {
     const now = new Date();
@@ -505,8 +507,9 @@ export const updateOrderStatus = catchAsync(async (req, res, next) => {
     order.shippingAddress.deliveryTime = now;
   }
 
-  // 7️⃣ NEW deliveryDate LOGIC  🔥🔥🔥
-  if (deliveryDate) {
+  // 7️⃣ Delivery Date - only set if not already set (prevent seller override in multi-vendor)
+  // Note: In multi-vendor scenario, ideally each product should have its own delivery date
+  if (deliveryDate && !order.shippingAddress.deliveryDate) {
     const parsedDate = new Date(deliveryDate);
     if (!isNaN(parsedDate.getTime())) {
       order.shippingAddress.deliveryDate = parsedDate;

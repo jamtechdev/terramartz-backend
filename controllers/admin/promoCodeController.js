@@ -111,7 +111,7 @@ export const updatePromoCode = catchAsync(async (req, res, next) => {
       "discount",
       "expiresAt",
       "minOrderAmount",
-      "type",
+      "type", 
       "isActive",
       "usageLimit",
       "perUserLimit",

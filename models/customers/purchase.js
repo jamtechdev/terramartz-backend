@@ -19,13 +19,30 @@ const purchaseSchema = new mongoose.Schema(
       index: true,
     },
 
-    // ✅ Products with individual timeline
+    // ✅ Products with individual status and timeline
     products: [
       {
         product: { type: String, ref: "Product", required: true },
         quantity: { type: Number, required: true },
         price: { type: Number, required: true },
         seller: { type: String, ref: "User", required: true },
+        // Individual product status - seller can update independently
+        status: {
+          type: String,
+          enum: [
+            "new",
+            "processing",
+            "shipped",
+            "in_transit",
+            "delivered",
+            "cancelled",
+            "refunded",
+            "return_requested",
+            "return_approved",
+            "return_rejected",
+          ],
+          default: "new",
+        },
         timeline: [
           {
             event: { type: String, required: true }, // e.g., "Order Confirmed"
