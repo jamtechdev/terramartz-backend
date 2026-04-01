@@ -4,6 +4,7 @@ import {
   getOnboardingLink,
   getAccountStatus,
   getDashboardLink,
+  getRemediationLink,
   // checkKYCStatus,
 } from "../../controllers/sellers/stripeConnectController.js";
 import { restrictToSeller } from "../../middleware/seller/restrictToSeller.js";
@@ -29,5 +30,6 @@ router.get("/account-status", getAccountStatus);
 // Get Dashboard Link (Stripe Express Dashboard)
 router.get("/dashboard-link", getDashboardLink);
 
-export default router;
+router.get("/remediation-link", getRemediationLink);
 
+export default router;

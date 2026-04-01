@@ -116,7 +116,7 @@ export const getSellerOrders = catchAsync(async (req, res, next) => {
     // Match orders containing products from this seller
     const match = { "products.seller": sellerId };
 
-    if (status) match.status = status;
+    // Note: In multi-vendor setup, we filter by product-level status, not order-level status
     if (paymentStatus) match.paymentStatus = paymentStatus;
 
     // Search by orderId or buyer info
@@ -148,6 +148,8 @@ export const getSellerOrders = catchAsync(async (req, res, next) => {
         { $unwind: "$products" },
         // Filter products for this seller again (after match on top level)
         { $match: { "products.seller": sellerId } },
+        // Filter by product-level status if provided
+        ...(status ? [{ $match: { "products.status": status } }] : []),
 
         // 🔹 Join with SellerSettlement to get refund details
         {
@@ -232,6 +234,8 @@ export const getSellerOrders = catchAsync(async (req, res, next) => {
                         price: "$products.price",
                         title: { $ifNull: ["$productInfo.title", "Unknown Product"] },
                         image: { $arrayElemAt: [{ $ifNull: ["$productInfo.productImages", []] }, 0] },
+                        // 🔹 Include individual product status (multi-vendor)
+                        status: { $ifNull: ["$products.status", "new"] },
                         // 🔹 Include refund info
                         refundStatus: { $ifNull: ["$productSettlement.refundStatus", "none"] },
                         refundAmount: { $ifNull: ["$productSettlement.refundAmount", 0] },

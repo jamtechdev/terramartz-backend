@@ -16,7 +16,7 @@ import { ProfileUpdateVerification } from "../models/common/ProfileUpdateVerific
 
 const client = twilio(
   process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
+  process.env.TWILIO_AUTH_TOKEN,
 );
 // user profile update code end....
 
@@ -41,14 +41,14 @@ export const getLoggedInUser = catchAsync(async (req, res, next) => {
   // Apply presigned URL to profilePicture (if exists)
   if (userObj.profilePicture) {
     userObj.profilePicture = await getPresignedUrl(
-      `profilePicture/${userObj.profilePicture}`
+      `profilePicture/${userObj.profilePicture}`,
     );
   }
 
   // Apply presigned URL to sellerProfile.shopPicture (if exists)
   if (userObj.sellerProfile && userObj.sellerProfile.shopPicture) {
     userObj.sellerProfile.shopPicture = await getPresignedUrl(
-      `shopPicture/${userObj.sellerProfile.shopPicture}`
+      `shopPicture/${userObj.sellerProfile.shopPicture}`,
     );
   }
 
@@ -62,7 +62,7 @@ export const getLoggedInUser = catchAsync(async (req, res, next) => {
 
 export const sendPhoneNumberVerificationOtpDirect = async (
   phoneNumber,
-  otp
+  otp,
 ) => {
   try {
     await client.messages.create({
@@ -118,7 +118,7 @@ export const startUpdateVerification = catchAsync(async (req, res, next) => {
     await uploadToS3(
       buffer,
       `profilePicture/${profilePictureKey}`,
-      "image/jpeg"
+      "image/jpeg",
     );
   }
 
@@ -128,7 +128,7 @@ export const startUpdateVerification = catchAsync(async (req, res, next) => {
 
   // Direct update without OTP - email/phone bhi direct update hoga, verify button par OTP send hoga
   // Always do direct update, OTP will be sent only when user clicks verify button
-  
+
   // Build update payload based on user role
   const updatePayload = {
     email: email || user.email, // Update email directly
@@ -149,35 +149,47 @@ export const startUpdateVerification = catchAsync(async (req, res, next) => {
   if (email) user.email = email;
   if (phoneNumber) user.phoneNumber = phoneNumber;
   if (bio !== undefined) user.bio = bio;
-  if (emailNotifications !== undefined) user.emailNotifications = emailNotifications;
-  if (pushNotifications !== undefined) user.pushNotifications = pushNotifications;
+  if (emailNotifications !== undefined)
+    user.emailNotifications = emailNotifications;
+  if (pushNotifications !== undefined)
+    user.pushNotifications = pushNotifications;
   if (marketingEmails !== undefined) user.marketingEmails = marketingEmails;
   if (notificationFrequency) user.notificationFrequency = notificationFrequency;
   if (language) user.language = language;
   if (currency) user.currency = currency;
-  if (defaultAddress) user.defaultAddress = defaultAddress;
+  if (defaultAddress) {
+    // Parse defaultAddress if sent as JSON string (common in multipart/form-data requests)
+    const addressData = typeof defaultAddress === 'string' 
+      ? JSON.parse(defaultAddress) 
+      : defaultAddress;
+    user.defaultAddress = addressData;
+  }
   if (profilePictureKey) user.profilePicture = profilePictureKey;
 
   // Add role-specific fields
   if (isSeller) {
     // For sellers: update businessName in both businessDetails and sellerProfile
-    if (businessName !== undefined && businessName !== null && businessName !== "") {
+    if (
+      businessName !== undefined &&
+      businessName !== null &&
+      businessName !== ""
+    ) {
       const trimmedBusinessName = businessName.trim();
-      
+
       // Update businessDetails
       if (!user.businessDetails) {
         user.businessDetails = { businessName: trimmedBusinessName };
       } else {
         user.businessDetails.businessName = trimmedBusinessName;
       }
-      
+
       // Update sellerProfile
       if (!user.sellerProfile) {
         user.sellerProfile = { shopName: trimmedBusinessName };
       } else {
         user.sellerProfile.shopName = trimmedBusinessName;
       }
-      
+
       console.log("🔄 Updating seller business name:", {
         businessName: trimmedBusinessName,
         hasBusinessDetails: !!user.businessDetails,
@@ -186,12 +198,17 @@ export const startUpdateVerification = catchAsync(async (req, res, next) => {
         currentShopName: user.sellerProfile?.shopName,
       });
     } else {
-      console.log("⚠️ Business name is empty/undefined/null, skipping update. Value:", businessName);
+      console.log(
+        "⚠️ Business name is empty/undefined/null, skipping update. Value:",
+        businessName,
+      );
     }
   } else if (!isSeller) {
     // For normal users: update firstName and lastName
-    if (firstName !== undefined && firstName !== null) user.firstName = firstName.trim();
-    if (lastName !== undefined && lastName !== null) user.lastName = lastName.trim();
+    if (firstName !== undefined && firstName !== null)
+      user.firstName = firstName.trim();
+    if (lastName !== undefined && lastName !== null)
+      user.lastName = lastName.trim();
     console.log("🔄 Updating user name:", { firstName, lastName });
   }
 
@@ -215,7 +232,7 @@ export const startUpdateVerification = catchAsync(async (req, res, next) => {
 
   // Use lean() result directly (already a plain object)
   const updatedUserObj = freshUser;
-  
+
   console.log("✅ Updated user object (after re-fetch):", {
     businessName: updatedUserObj.businessDetails?.businessName,
     shopName: updatedUserObj.sellerProfile?.shopName,
@@ -223,21 +240,28 @@ export const startUpdateVerification = catchAsync(async (req, res, next) => {
     lastName: updatedUserObj.lastName,
     hasBusinessDetails: !!updatedUserObj.businessDetails,
     hasSellerProfile: !!updatedUserObj.sellerProfile,
-    businessDetailsKeys: updatedUserObj.businessDetails ? Object.keys(updatedUserObj.businessDetails) : [],
-    sellerProfileKeys: updatedUserObj.sellerProfile ? Object.keys(updatedUserObj.sellerProfile) : [],
+    businessDetailsKeys: updatedUserObj.businessDetails
+      ? Object.keys(updatedUserObj.businessDetails)
+      : [],
+    sellerProfileKeys: updatedUserObj.sellerProfile
+      ? Object.keys(updatedUserObj.sellerProfile)
+      : [],
   });
-  
+
   // presigned URL
   if (updatedUserObj.profilePicture) {
     updatedUserObj.profilePicture = await getPresignedUrl(
-      `profilePicture/${updatedUserObj.profilePicture}`
+      `profilePicture/${updatedUserObj.profilePicture}`,
     );
   }
 
   // Apply presigned URL to sellerProfile.shopPicture if exists
-  if (updatedUserObj.sellerProfile && updatedUserObj.sellerProfile.shopPicture) {
+  if (
+    updatedUserObj.sellerProfile &&
+    updatedUserObj.sellerProfile.shopPicture
+  ) {
     updatedUserObj.sellerProfile.shopPicture = await getPresignedUrl(
-      `shopPicture/${updatedUserObj.sellerProfile.shopPicture}`
+      `shopPicture/${updatedUserObj.sellerProfile.shopPicture}`,
     );
   }
 
@@ -427,9 +451,8 @@ export const resendVerificationOtp = async (req, res, next) => {
     if (!["email", "phone"].includes(type))
       return next(new AppError("Invalid type", 400));
 
-    const verification = await ProfileUpdateVerification.findById(
-      verificationId
-    );
+    const verification =
+      await ProfileUpdateVerification.findById(verificationId);
     if (!verification) return next(new AppError("Verification not found", 404));
 
     // Simple rate-limit rules
@@ -445,7 +468,7 @@ export const resendVerificationOtp = async (req, res, next) => {
       now - verification.lastSentAt.getTime() < MIN_RETRY_INTERVAL_MS
     ) {
       return next(
-        new AppError("Please wait before requesting another OTP", 429)
+        new AppError("Please wait before requesting another OTP", 429),
       );
     }
 
@@ -462,8 +485,8 @@ export const resendVerificationOtp = async (req, res, next) => {
       return next(
         new AppError(
           "You have exceeded the maximum resend attempts for today",
-          429
-        )
+          429,
+        ),
       );
     }
 
@@ -485,11 +508,11 @@ export const resendVerificationOtp = async (req, res, next) => {
         await new Email(
           { email: verification.pendingData.email, emailOtp: newEmailOtp },
           null,
-          process.env.FRONTEND_URL
+          process.env.FRONTEND_URL,
         ).sendEmailVerificationOtpFn();
       } catch (err) {
         return next(
-          new AppError("Failed to send email OTP: " + err.message, 500)
+          new AppError("Failed to send email OTP: " + err.message, 500),
         );
       }
 
@@ -515,11 +538,11 @@ export const resendVerificationOtp = async (req, res, next) => {
       try {
         await sendPhoneNumberVerificationOtpDirect(
           verification.pendingData.phoneNumber,
-          newPhoneOtp
+          newPhoneOtp,
         );
       } catch (err) {
         return next(
-          new AppError("Failed to send phone OTP: " + err.message, 500)
+          new AppError("Failed to send phone OTP: " + err.message, 500),
         );
       }
 
@@ -539,9 +562,8 @@ export const resendVerificationOtp = async (req, res, next) => {
 export const verifyEmailOtp = async (req, res, next) => {
   try {
     const { verificationId, emailOtp } = req.body;
-    const verification = await ProfileUpdateVerification.findById(
-      verificationId
-    );
+    const verification =
+      await ProfileUpdateVerification.findById(verificationId);
 
     if (!verification) return next(new AppError("Verification not found", 404));
 
@@ -569,11 +591,11 @@ export const verifyEmailOtp = async (req, res, next) => {
       try {
         await sendPhoneNumberVerificationOtpDirect(
           verification.pendingData.phoneNumber,
-          verification.phoneOtp
+          verification.phoneOtp,
         );
       } catch (err) {
         return next(
-          new AppError("Failed to send phone OTP: " + err.message, 500)
+          new AppError("Failed to send phone OTP: " + err.message, 500),
         );
       }
     } else {
@@ -581,7 +603,7 @@ export const verifyEmailOtp = async (req, res, next) => {
 
       // Final update to user (user is already fetched above)
       const isSeller = user.role === "seller";
-      
+
       const updatePayload = {
         email: verification.pendingData.email,
         bio: verification.pendingData.bio,
@@ -591,15 +613,21 @@ export const verifyEmailOtp = async (req, res, next) => {
       if (isSeller && verification.pendingData.businessName) {
         // Ensure nested objects exist
         if (!user.businessDetails) {
-          updatePayload.businessDetails = { businessName: verification.pendingData.businessName };
+          updatePayload.businessDetails = {
+            businessName: verification.pendingData.businessName,
+          };
         } else {
-          updatePayload["businessDetails.businessName"] = verification.pendingData.businessName;
+          updatePayload["businessDetails.businessName"] =
+            verification.pendingData.businessName;
         }
-        
+
         if (!user.sellerProfile) {
-          updatePayload.sellerProfile = { shopName: verification.pendingData.businessName };
+          updatePayload.sellerProfile = {
+            shopName: verification.pendingData.businessName,
+          };
         } else {
-          updatePayload["sellerProfile.shopName"] = verification.pendingData.businessName;
+          updatePayload["sellerProfile.shopName"] =
+            verification.pendingData.businessName;
         }
       } else if (!isSeller) {
         updatePayload.firstName = verification.pendingData.firstName;
@@ -626,9 +654,8 @@ export const verifyEmailOtp = async (req, res, next) => {
 export const verifyPhoneOtp = async (req, res, next) => {
   try {
     const { verificationId, phoneOtp } = req.body;
-    const verification = await ProfileUpdateVerification.findById(
-      verificationId
-    );
+    const verification =
+      await ProfileUpdateVerification.findById(verificationId);
 
     if (!verification) return next(new AppError("Verification not found", 404));
 
@@ -644,7 +671,7 @@ export const verifyPhoneOtp = async (req, res, next) => {
     // Final update to user
     const user = await User.findById(verification.user);
     const isSeller = user.role === "seller";
-    
+
     const updatePayload = {
       email: verification.pendingData.email,
       phoneNumber: verification.pendingData.phoneNumber,
@@ -655,15 +682,21 @@ export const verifyPhoneOtp = async (req, res, next) => {
     if (isSeller && verification.pendingData.businessName) {
       // Ensure nested objects exist
       if (!user.businessDetails) {
-        updatePayload.businessDetails = { businessName: verification.pendingData.businessName };
+        updatePayload.businessDetails = {
+          businessName: verification.pendingData.businessName,
+        };
       } else {
-        updatePayload["businessDetails.businessName"] = verification.pendingData.businessName;
+        updatePayload["businessDetails.businessName"] =
+          verification.pendingData.businessName;
       }
-      
+
       if (!user.sellerProfile) {
-        updatePayload.sellerProfile = { shopName: verification.pendingData.businessName };
+        updatePayload.sellerProfile = {
+          shopName: verification.pendingData.businessName,
+        };
       } else {
-        updatePayload["sellerProfile.shopName"] = verification.pendingData.businessName;
+        updatePayload["sellerProfile.shopName"] =
+          verification.pendingData.businessName;
       }
     } else if (!isSeller) {
       updatePayload.firstName = verification.pendingData.firstName;

@@ -23,9 +23,11 @@ export const sectionOne = catchAsync(async (req, res, next) => {
 
   const productInStock = await Product.countDocuments();
 
-  res.status(200).json({
+    res.status(200).json({
     totalOrder,
-    revenue: revenue[0].totalRevenue,
+    revenue: revenue[0]?.totalRevenue
+      ? Number(revenue[0].totalRevenue.toFixed(2))
+      : 0,
     activeUsers,
     productInStock,
   });

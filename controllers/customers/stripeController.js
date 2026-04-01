@@ -588,6 +588,23 @@ export const webhookPayment = async (req, res, next) => {
       console.error("⚠️ Failed to update account status:", err);
     }
   }
+  if (event.type === "capability.updated") {
+    try {
+      const capability = event.data.object;
+      if (capability.account) {
+        const account = await stripe.accounts.retrieve(capability.account);
+        const { updateAccountStatus } =
+          await import("../sellers/stripeConnectController.js");
+        await updateAccountStatus(account.id, account);
+        console.log(
+          "✅ Account status updated via capability.updated:",
+          capability.account,
+        );
+      }
+    } catch (err) {
+      console.error("⚠️ Failed to update account status from capability:", err);
+    }
+  }
 
   // Handle Checkout Session completion
   if (event.type === "checkout.session.completed") {

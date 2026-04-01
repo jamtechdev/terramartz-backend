@@ -8,23 +8,23 @@ const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 // Add this function to check KYC status before allowing Stripe operations
 export const checkKYCStatus = catchAsync(async (req, res, next) => {
   const seller = await User.findById(req.user._id);
-  
-  if (seller.sellerProfile?.kycStatus !== 'approved') {
+
+  if (seller.sellerProfile?.kycStatus !== "approved") {
     return next(
       new AppError(
-        'KYC verification required before accessing payment features. Please complete your KYC verification.',
-        403
-      )
+        "KYC verification required before accessing payment features. Please complete your KYC verification.",
+        403,
+      ),
     );
   }
-  
+
   next();
 });
 
 // Helper function to convert country name to ISO code
 const getCountryCode = (country) => {
   if (!country) return "US";
-  
+
   // If already a 2-letter code, return as is
   if (typeof country === "string" && country.length === 2) {
     return country.toUpperCase();
@@ -99,12 +99,15 @@ export const createStripeAccount = catchAsync(async (req, res, next) => {
     try {
       await stripe.accounts.list({ limit: 1 });
     } catch (connectError) {
-      if (connectError.message && connectError.message.includes("signed up for Connect")) {
+      if (
+        connectError.message &&
+        connectError.message.includes("signed up for Connect")
+      ) {
         return next(
           new AppError(
             "Stripe Connect is not enabled. Please enable it in Stripe Dashboard: https://dashboard.stripe.com/settings/connect (or /test/settings/connect for test mode). Then restart the server.",
-            400
-          )
+            400,
+          ),
         );
       }
       // If it's a different error, continue with account creation
@@ -112,11 +115,9 @@ export const createStripeAccount = catchAsync(async (req, res, next) => {
 
     // Get country code from user's location
     // Priority: countryCode > businessDetails.country > default US
-    const countrySource = 
-      seller.countryCode || 
-      seller.businessDetails?.country || 
-      "US";
-    
+    const countrySource =
+      seller.countryCode || seller.businessDetails?.country || "US";
+
     const countryCode = getCountryCode(countrySource);
 
     // Create Express account
@@ -151,22 +152,22 @@ export const createStripeAccount = catchAsync(async (req, res, next) => {
     });
   } catch (error) {
     console.error("Stripe account creation error:", error);
-    
+
     // Provide more helpful error message for Connect not enabled
     if (error.message && error.message.includes("signed up for Connect")) {
       return next(
         new AppError(
           "Stripe Connect is not enabled in your Stripe account. Please enable it in Stripe Dashboard: Settings → Connect → Enable Connect. Then restart the server and try again.",
-          400
-        )
+          400,
+        ),
       );
     }
-    
+
     return next(
       new AppError(
         error.message || "Failed to create Stripe account",
-        error.statusCode || 500
-      )
+        error.statusCode || 500,
+      ),
     );
   }
 });
@@ -187,15 +188,17 @@ export const getOnboardingLink = catchAsync(async (req, res, next) => {
     return next(
       new AppError(
         "Stripe account not found. Please create an account first.",
-        404
-      )
+        404,
+      ),
     );
   }
 
   try {
     // Get frontend URL for return
     const frontendUrl =
-      process.env.FRONTEND_URL || process.env.NEXT_PUBLIC_FRONTEND_URL || "http://localhost:3000";
+      process.env.FRONTEND_URL ||
+      process.env.NEXT_PUBLIC_FRONTEND_URL ||
+      "http://localhost:3000";
 
     // Create account link for onboarding
     const accountLink = await stripe.accountLinks.create({
@@ -215,8 +218,8 @@ export const getOnboardingLink = catchAsync(async (req, res, next) => {
     return next(
       new AppError(
         error.message || "Failed to create onboarding link",
-        error.statusCode || 500
-      )
+        error.statusCode || 500,
+      ),
     );
   }
 });
@@ -228,9 +231,7 @@ export const getAccountStatus = catchAsync(async (req, res, next) => {
   }
 
   const seller = await User.findById(req.user._id);
-  if (!seller) {
-    return next(new AppError("Seller not found", 404));
-  }
+  if (!seller) return next(new AppError("Seller not found", 404));
 
   const accountId = seller.sellerProfile?.stripeAccountId;
   if (!accountId) {
@@ -243,39 +244,81 @@ export const getAccountStatus = catchAsync(async (req, res, next) => {
   }
 
   try {
-    // Fetch account details from Stripe
     const account = await stripe.accounts.retrieve(accountId);
 
-    // Update local status if changed
-    const stripeStatus = account.details_submitted
-      ? account.charges_enabled && account.payouts_enabled
-        ? "active"
-        : "pending"
-      : "pending";
+    // ✅ Same logic as updateAccountStatus — restricted check FIRST
+    const isRestricted =
+      account.details_submitted &&
+      (account.requirements?.disabled_reason ||
+        account.requirements?.past_due?.length > 0 ||
+        account.requirements?.currently_due?.length > 0);
 
-    if (seller.sellerProfile.stripeAccountStatus !== stripeStatus) {
-      seller.sellerProfile.stripeAccountStatus = stripeStatus;
-      seller.sellerProfile.stripeOnboardingComplete = account.details_submitted;
-      await seller.save();
+    let stripeStatus;
+    if (isRestricted) {
+      stripeStatus = "restricted";
+    } else if (account.charges_enabled && account.payouts_enabled) {
+      stripeStatus = "active";
+    } else if (account.details_submitted) {
+      stripeStatus = "submitted";
+    } else {
+      stripeStatus = "pending";
     }
 
-    res.status(200).json({
+    // Update DB if status changed
+    if (seller.sellerProfile.stripeAccountStatus !== stripeStatus) {
+      seller.sellerProfile.stripeAccountStatus = stripeStatus;
+      seller.sellerProfile.stripeOnboardingComplete =
+        account.details_submitted || false;
+      await seller.save();
+
+      // ✅ Also trigger remediation link if newly restricted
+      if (stripeStatus === "restricted") {
+        const { updateAccountStatus } =
+          await import("./stripeConnectController.js");
+        // Re-use the notification/email logic by calling updateAccountStatus
+        // But status is already saved so just send the link directly
+        try {
+          const frontendUrl =
+            process.env.FRONTEND_URL || "http://localhost:3000";
+          const accountLink = await stripe.accountLinks.create({
+            account: accountId,
+            refresh_url: `${frontendUrl}/vendor/dashboard?stripe_refresh=true`,
+            return_url: `${frontendUrl}/vendor/dashboard?stripe_return=true`,
+            type: "account_onboarding",
+          });
+          seller.sellerProfile.stripeRemediationLink = accountLink.url;
+          seller.sellerProfile.stripeRemediationLinkExpiry = new Date(
+            accountLink.expires_at * 1000,
+          );
+          await seller.save();
+        } catch (linkErr) {
+          console.error("Failed to generate remediation link:", linkErr);
+        }
+      }
+    }
+
+    return res.status(200).json({
       status: "success",
       hasAccount: true,
-      accountId: accountId,
+      accountId,
       accountStatus: stripeStatus,
       onboardingComplete: account.details_submitted,
       chargesEnabled: account.charges_enabled,
       payoutsEnabled: account.payouts_enabled,
       detailsSubmitted: account.details_submitted,
+      // ✅ Send requirements info so frontend can show what's needed
+      requirements: isRestricted
+        ? {
+            disabledReason: account.requirements?.disabled_reason,
+            pastDue: account.requirements?.past_due || [],
+            currentlyDue: account.requirements?.currently_due || [],
+          }
+        : null,
     });
   } catch (error) {
     console.error("Account status check error:", error);
     return next(
-      new AppError(
-        error.message || "Failed to check account status",
-        error.statusCode || 500
-      )
+      new AppError(error.message || "Failed to check account status", 500),
     );
   }
 });
@@ -296,8 +339,8 @@ export const getDashboardLink = catchAsync(async (req, res, next) => {
     return next(
       new AppError(
         "Stripe account not found. Please create and complete onboarding first.",
-        404
-      )
+        404,
+      ),
     );
   }
 
@@ -315,13 +358,12 @@ export const getDashboardLink = catchAsync(async (req, res, next) => {
     return next(
       new AppError(
         error.message || "Failed to create dashboard link",
-        error.statusCode || 500
-      )
+        error.statusCode || 500,
+      ),
     );
   }
 });
 
-// ✅ Update Account Status (called from webhook)
 export const updateAccountStatus = async (accountId, accountData) => {
   try {
     const seller = await User.findOne({
@@ -333,18 +375,156 @@ export const updateAccountStatus = async (accountId, accountData) => {
       return;
     }
 
-    const isActive =
-      accountData.charges_enabled && accountData.payouts_enabled;
-    const status = isActive ? "active" : "pending";
+    const previousStatus = seller.sellerProfile.stripeAccountStatus;
+
+    // ✅ Check restricted FIRST — before checking active/submitted
+    // An account can have charges_enabled:true but still be restricted on payouts
+    const isRestricted =
+      accountData.details_submitted &&
+      (accountData.requirements?.disabled_reason ||
+        accountData.requirements?.past_due?.length > 0 ||
+        accountData.requirements?.currently_due?.length > 0);
+
+    let status;
+
+    if (isRestricted) {
+      // Restricted takes priority even if charges_enabled is true
+      status = "restricted";
+    } else if (accountData.charges_enabled && accountData.payouts_enabled) {
+      status = "active";
+    } else if (accountData.details_submitted) {
+      status = "submitted";
+    } else {
+      status = "pending";
+    }
 
     seller.sellerProfile.stripeAccountStatus = status;
     seller.sellerProfile.stripeOnboardingComplete =
       accountData.details_submitted || false;
-
     await seller.save();
-    console.log(`Updated account status for seller ${seller._id}: ${status}`);
+
+    console.log(
+      `✅ Stripe status updated → seller ${seller._id}: ${previousStatus} → ${status}`,
+    );
+    console.log(`   charges_enabled: ${accountData.charges_enabled}`);
+    console.log(`   payouts_enabled: ${accountData.payouts_enabled}`);
+    console.log(
+      `   disabled_reason: ${accountData.requirements?.disabled_reason}`,
+    );
+    console.log(
+      `   past_due: ${JSON.stringify(accountData.requirements?.past_due)}`,
+    );
+
+    // Auto-send remediation link when account becomes restricted
+    if (status === "restricted" && previousStatus !== "restricted") {
+      await sendRemediationLinkToSeller(seller, accountId);
+    }
+
+    // Notify seller when account becomes active
+    if (status === "active" && previousStatus !== "active") {
+      await notifySellerAccountActive(seller);
+    }
   } catch (error) {
-    console.error("Error updating account status:", error);
+    console.error("Error in updateAccountStatus:", error);
   }
 };
 
+// Helper: Generate remediation link and notify seller
+const sendRemediationLinkToSeller = async (seller, accountId) => {
+  try {
+    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+
+    // Generate account update link (this IS the remediation link)
+    const accountLink = await stripe.accountLinks.create({
+      account: accountId,
+      refresh_url: `${frontendUrl}/vendor/dashboard?stripe_refresh=true`,
+      return_url: `${frontendUrl}/vendor/dashboard?stripe_return=true`,
+      type: "account_onboarding", // Stripe uses this for remediation too
+    });
+
+    // Save the link temporarily in seller profile (optional, links expire in 24h)
+    seller.sellerProfile.stripeRemediationLink = accountLink.url;
+    seller.sellerProfile.stripeRemediationLinkExpiry = new Date(
+      accountLink.expires_at * 1000,
+    );
+    await seller.save();
+
+    // 🔔 In-app notification
+    try {
+      const { Notification } =
+        await import("../../models/common/notification.js");
+      await Notification.create({
+        user: String(seller._id),
+        type: "stripe_action_required",
+        title: "Action Required: Stripe Account Restricted",
+        message:
+          "Your Stripe account requires additional information. Please complete the verification to continue receiving payments.",
+        metadata: {
+          remediationLink: accountLink.url,
+          expiresAt: accountLink.expires_at,
+        },
+      });
+    } catch (notifErr) {
+      console.error("Failed to create restriction notification:", notifErr);
+    }
+
+    // 📧 Send email (plug in your email service here)
+    try {
+      await sendRemediationEmail(
+        seller.email,
+        seller.firstName,
+        accountLink.url,
+      );
+    } catch (emailErr) {
+      console.error("Failed to send remediation email:", emailErr);
+    }
+
+    console.log(`✅ Remediation link sent to seller ${seller._id}`);
+  } catch (err) {
+    console.error("Failed to send remediation link:", err);
+  }
+};
+
+const notifySellerAccountActive = async (seller) => {
+  try {
+    const { Notification } =
+      await import("../../models/common/notification.js");
+    await Notification.create({
+      user: String(seller._id),
+      type: "stripe_account_active",
+      title: "Stripe Account Activated!",
+      message:
+        "Your Stripe account is now fully active. You can start receiving payments.",
+    });
+  } catch (err) {
+    console.error("Failed to send activation notification:", err);
+  }
+};
+
+export const getRemediationLink = catchAsync(async (req, res, next) => {
+  const seller = await User.findById(req.user._id);
+
+  if (!seller?.sellerProfile?.stripeAccountId) {
+    return next(new AppError("No Stripe account found", 404));
+  }
+
+  if (seller.sellerProfile.stripeAccountStatus !== "restricted") {
+    return next(new AppError("Account is not restricted", 400));
+  }
+
+  const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+
+  // Always generate a fresh link (they expire, so don't rely on the saved one)
+  const accountLink = await stripe.accountLinks.create({
+    account: seller.sellerProfile.stripeAccountId,
+    refresh_url: `${frontendUrl}/vendor/dashboard?stripe_refresh=true`,
+    return_url: `${frontendUrl}/vendor/dashboard?stripe_return=true`,
+    type: "account_onboarding",
+  });
+
+  res.status(200).json({
+    status: "success",
+    url: accountLink.url,
+    expiresAt: accountLink.expires_at,
+  });
+});

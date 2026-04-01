@@ -181,9 +181,18 @@ const userSchema = new mongoose.Schema(
         trim: true,
         default: null,
       },
+      // In userSchema — sellerProfile.stripeAccountStatus
       stripeAccountStatus: {
         type: String,
-        enum: ["pending", "active", "restricted", null],
+        enum: ["pending", "submitted", "active", "restricted", null],
+        default: null,
+      },
+      stripeRemediationLink: {
+        type: String,
+        default: null,
+      },
+      stripeRemediationLinkExpiry: {
+        type: Date,
         default: null,
       },
       stripeOnboardingComplete: {
