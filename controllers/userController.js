@@ -65,11 +65,12 @@ export const sendPhoneNumberVerificationOtpDirect = async (
   otp,
 ) => {
   try {
-    await client.messages.create({
+    const smsOtpRes = await client.messages.create({
       body: `Your OTP is ${otp}. It is valid for 5 minutes.`,
       from: process.env.TWILIO_PHONE_NUMBER,
       to: phoneNumber,
     });
+
     return { status: "success", message: "OTP sent successfully!" };
   } catch (error) {
     console.log("Twilio error:", error);
@@ -123,7 +124,6 @@ export const startUpdateVerification = catchAsync(async (req, res, next) => {
     );
   }
 
-  // যদি শুধু name/bio/preferences update হয় — OTP generate না করে direct update
   if (!isEmailNew && !isPhoneNew) {
     // Update profile picture if changed
     if (profilePictureKey) {
@@ -145,7 +145,7 @@ export const startUpdateVerification = catchAsync(async (req, res, next) => {
         currency,
         defaultAddress,
       },
-      { new: true }
+      { new: true },
     );
 
     // Apply presigned URL to profile picture
@@ -205,45 +205,44 @@ export const startUpdateVerification = catchAsync(async (req, res, next) => {
     step: isEmailNew
       ? "emailPending"
       : isPhoneNew
-      ? "phonePending"
-      : "completed",
+        ? "phonePending"
+        : "completed",
   };
 
-  const updatedVerification =
-    await ProfileUpdateVerification.findOneAndUpdate(
-      { user: userId },
-      {
-        $set: {
-          pendingData: updatePayload.pendingData,
-          ...(isEmailNew ? { emailOtp: updatePayload.emailOtp } : {}),
-          ...(isEmailNew
-            ? { emailOtpExpiresAt: updatePayload.emailOtpExpiresAt }
-            : {}),
-          ...(isPhoneNew ? { phoneOtp: updatePayload.phoneOtp } : {}),
-          ...(isPhoneNew
-            ? { phoneOtpExpiresAt: updatePayload.phoneOtpExpiresAt }
-            : {}),
-          step: updatePayload.step,
-          lastSentAt: updatePayload.lastSentAt,
-        },
-        $setOnInsert: {
-          resendCount: 0,
-          firstSentAt: now,
-        },
+  const updatedVerification = await ProfileUpdateVerification.findOneAndUpdate(
+    { user: userId },
+    {
+      $set: {
+        pendingData: updatePayload.pendingData,
+        ...(isEmailNew ? { emailOtp: updatePayload.emailOtp } : {}),
+        ...(isEmailNew
+          ? { emailOtpExpiresAt: updatePayload.emailOtpExpiresAt }
+          : {}),
+        ...(isPhoneNew ? { phoneOtp: updatePayload.phoneOtp } : {}),
+        ...(isPhoneNew
+          ? { phoneOtpExpiresAt: updatePayload.phoneOtpExpiresAt }
+          : {}),
+        step: updatePayload.step,
+        lastSentAt: updatePayload.lastSentAt,
       },
-      { new: true, upsert: true, setDefaultsOnInsert: true }
-    );
+      $setOnInsert: {
+        resendCount: 0,
+        firstSentAt: now,
+      },
+    },
+    { new: true, upsert: true, setDefaultsOnInsert: true },
+  );
 
   // Send OTPs if email or phone changed
   if (isEmailNew) {
     await new Email(
-      { 
-        email, 
+      {
+        email,
         emailOtp: updatedVerification.emailOtp,
-        firstName: user.firstName || firstName // Include firstName for email template
+        firstName: user.firstName || firstName, // Include firstName for email template
       },
       null,
-      process.env.FRONTEND_URL
+      process.env.FRONTEND_URL,
     ).sendEmailVerificationOtpFn();
   }
 
@@ -251,7 +250,7 @@ export const startUpdateVerification = catchAsync(async (req, res, next) => {
     try {
       await sendPhoneNumberVerificationOtpDirect(
         phoneNumber,
-        updatedVerification.phoneOtp
+        updatedVerification.phoneOtp,
       );
     } catch (error) {
       return next(new AppError(error.message, 500));
@@ -331,10 +330,10 @@ export const resendVerificationOtp = async (req, res, next) => {
         // Get user for firstName
         const user = await User.findById(verification.user);
         await new Email(
-          { 
-            email: verification.pendingData.email, 
+          {
+            email: verification.pendingData.email,
             emailOtp: newEmailOtp,
-            firstName: user?.firstName || verification.pendingData?.firstName
+            firstName: user?.firstName || verification.pendingData?.firstName,
           },
           null,
           process.env.FRONTEND_URL,
