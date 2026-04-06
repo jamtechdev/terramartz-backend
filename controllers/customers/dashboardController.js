@@ -2,35 +2,51 @@ import { Purchase } from "../../models/customers/purchase.js";
 import { WishlistProduct } from "../../models/customers/wishlistProduct.js";
 import { Review } from "../../models/common/review.js";
 import catchAsync from "../../utils/catchasync.js";
+import AppError from "../../utils/apperror.js";
 import { LoyaltyPoint } from "../../models/customers/loyaltyPoints.js";
+
+function purchaseBuyerMatch(req) {
+  const userId = req.user._id || req.user.id;
+  const userIdString = String(userId);
+  const userIdAlt1 = req.user._id ? String(req.user._id) : null;
+  const userIdAlt2 = req.user.id ? String(req.user.id) : null;
+  return {
+    $or: [
+      { buyer: userIdString },
+      ...(userIdAlt1 ? [{ buyer: userIdAlt1 }] : []),
+      ...(userIdAlt2 ? [{ buyer: userIdAlt2 }] : []),
+    ].filter(Boolean),
+  };
+}
+
+/** String ids for models that store `user` like Purchase stores `buyer` */
+function userIdVariants(req) {
+  return [
+    ...new Set(
+      [req.user._id, req.user.id].filter(Boolean).map((x) => String(x)),
+    ),
+  ];
+}
 
 // 🔹 Recent Activity (Top 3 items)
 export const getRecentActivity = catchAsync(async (req, res, next) => {
-  // Handle both _id and id formats
-  const userId = req.user._id || req.user.id;
-
   // 🔹 Fetch last orders (all statuses, not just delivered)
-  const recentOrders = await Purchase.find({
-    $or: [
-      { buyer: userId },
-      { buyer: String(userId) },
-      { buyer: req.user._id },
-      { buyer: req.user.id },
-    ]
-  })
+  const recentOrders = await Purchase.find(purchaseBuyerMatch(req))
     .sort({ createdAt: -1 })
     .limit(5)
     .lean();
 
   // 🔹 Fetch last 5 wishlist actions
-  const recentWishlist = await WishlistProduct.find({ user: userId })
+  const recentWishlist = await WishlistProduct.find({
+    user: { $in: userIdVariants(req) },
+  })
     .sort({ createdAt: -1 })
     .populate("product", "title slug _id")
     .limit(5)
     .lean();
 
   // 🔹 Fetch last 5 reviews
-  const recentReviews = await Review.find({ user: userId })
+  const recentReviews = await Review.find({ user: { $in: userIdVariants(req) } })
     .sort({ createdAt: -1 })
     .populate("product", "title slug _id")
     .limit(5)
@@ -91,21 +107,10 @@ export const getRecentActivity = catchAsync(async (req, res, next) => {
 
 // 🔹 Active Orders
 export const getActiveOrders = catchAsync(async (req, res, next) => {
-  const userId = req.user._id || req.user.id;
-
-  // Purchase model stores buyer as String, so convert all to strings for matching
-  const userIdString = String(userId);
-  const userIdAlt1 = req.user._id ? String(req.user._id) : null;
-  const userIdAlt2 = req.user.id ? String(req.user.id) : null;
-
-  // 🔹 Fetch active orders for this customer
+  // 🔹 Fetch active orders for this customer (include in_transit)
   const activeOrders = await Purchase.find({
-    $or: [
-      { buyer: userIdString },
-      ...(userIdAlt1 ? [{ buyer: userIdAlt1 }] : []),
-      ...(userIdAlt2 ? [{ buyer: userIdAlt2 }] : []),
-    ].filter(Boolean),
-    status: { $in: ["new", "processing", "shipped"] }, // exclude delivered/cancelled
+    ...purchaseBuyerMatch(req),
+    status: { $in: ["new", "processing", "shipped", "in_transit"] },
   })
     .sort({ createdAt: -1 })
     .populate({
@@ -151,10 +156,6 @@ export const getCustomerDashboardStats = catchAsync(async (req, res, next) => {
     return next(new AppError("User not authenticated", 401));
   }
 
-  console.log("\n========== GET DASHBOARD STATS ==========");
-  console.log("📦 User ID:", userId);
-  console.log("📦 User ID type:", typeof userId);
-
   const startOfMonth = new Date(
     new Date().getFullYear(),
     new Date().getMonth(),
@@ -163,43 +164,19 @@ export const getCustomerDashboardStats = catchAsync(async (req, res, next) => {
   const endOfMonth = new Date();
 
   // ==================== 1️⃣ TOTAL ORDERS ====================
-  // Purchase model stores buyer as String, so convert all to strings for matching
+  const buyerMatch = purchaseBuyerMatch(req);
   const userIdString = String(userId);
-  const userIdAlt1 = req.user._id ? String(req.user._id) : null;
-  const userIdAlt2 = req.user.id ? String(req.user.id) : null;
-  
-  console.log("📦 Searching orders with buyer IDs:", { userIdString, userIdAlt1, userIdAlt2 });
-  
-  const totalOrders = await Purchase.countDocuments({
-    $or: [
-      { buyer: userIdString },
-      ...(userIdAlt1 ? [{ buyer: userIdAlt1 }] : []),
-      ...(userIdAlt2 ? [{ buyer: userIdAlt2 }] : []),
-    ].filter(Boolean)
-  });
-  
-  console.log("📦 Total orders found:", totalOrders);
+
+  const totalOrders = await Purchase.countDocuments(buyerMatch);
 
   const monthlyOrders = await Purchase.countDocuments({
-    $or: [
-      { buyer: userIdString },
-      ...(userIdAlt1 ? [{ buyer: userIdAlt1 }] : []),
-      ...(userIdAlt2 ? [{ buyer: userIdAlt2 }] : []),
-    ].filter(Boolean),
+    ...buyerMatch,
     createdAt: { $gte: startOfMonth, $lte: endOfMonth },
   });
 
   // ==================== 2️⃣ TOTAL SPENT ====================
   const totalSpentResult = await Purchase.aggregate([
-    { 
-      $match: { 
-        $or: [
-          { buyer: userIdString },
-          ...(userIdAlt1 ? [{ buyer: userIdAlt1 }] : []),
-          ...(userIdAlt2 ? [{ buyer: userIdAlt2 }] : []),
-        ].filter(Boolean)
-      } 
-    },
+    { $match: buyerMatch },
     { $group: { _id: null, total: { $sum: "$totalAmount" } } },
   ]);
 
@@ -215,13 +192,9 @@ export const getCustomerDashboardStats = catchAsync(async (req, res, next) => {
 
   const prevMonthSpentResult = await Purchase.aggregate([
     {
-      $match: { 
-        $or: [
-          { buyer: userIdString },
-          ...(userIdAlt1 ? [{ buyer: userIdAlt1 }] : []),
-          ...(userIdAlt2 ? [{ buyer: userIdAlt2 }] : []),
-        ].filter(Boolean),
-        createdAt: { $gte: prevStart, $lte: prevEnd } 
+      $match: {
+        ...buyerMatch,
+        createdAt: { $gte: prevStart, $lte: prevEnd },
       },
     },
     { $group: { _id: null, total: { $sum: "$totalAmount" } } },
@@ -235,7 +208,15 @@ export const getCustomerDashboardStats = catchAsync(async (req, res, next) => {
   // ==================== 3️⃣ LOYALTY POINTS ====================
   // Calculate loyalty points by summing earned points and subtracting redeemed points
   const loyaltyResult = await LoyaltyPoint.aggregate([
-    { $match: { user: userIdString } },
+    {
+      $match: {
+        $or: [
+          { user: userIdString },
+          ...(req.user._id ? [{ user: String(req.user._id) }] : []),
+          ...(req.user.id ? [{ user: String(req.user.id) }] : []),
+        ].filter(Boolean),
+      },
+    },
     {
       $group: {
         _id: null,

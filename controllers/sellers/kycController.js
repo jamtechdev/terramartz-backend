@@ -7,7 +7,7 @@ import AppError from '../../utils/apperror.js';
 
 // Submit KYC documents
 export const submitKYCDocuments = catchAsync(async (req, res, next) => {
-  const sellerId = req.user._id;
+  const sellerId = req.user._id || req.user.id;
   
   // Check if seller exists
   const seller = await User.findById(sellerId);
@@ -108,20 +108,40 @@ export const submitKYCDocuments = catchAsync(async (req, res, next) => {
   });
 });
 
-// Get KYC status
+const PROFILE_KYC_STATUSES = new Set([
+  'pending',
+  'submitted',
+  'under_review',
+  'approved',
+  'rejected',
+]);
+
+// Get KYC status — align with User.sellerProfile.kycStatus (source for Stripe / gates) when set
 export const getKYCStatus = catchAsync(async (req, res, next) => {
-  const sellerId = req.user._id;
-  
+  const sellerId = req.user._id || req.user.id;
+
+  const seller = await User.findById(sellerId).select('sellerProfile.kycStatus role');
+  if (!seller || seller.role !== 'seller') {
+    return next(new AppError('Seller not found', 404));
+  }
+
+  const profileStatus = seller.sellerProfile?.kycStatus;
+  const useProfileStatus =
+    typeof profileStatus === 'string' &&
+    profileStatus.trim() !== '' &&
+    PROFILE_KYC_STATUSES.has(profileStatus);
+
   const kycRecord = await KYC.findOne({ sellerId }).populate('reviewedBy');
-  
+
   if (!kycRecord) {
+    const status = useProfileStatus ? profileStatus : 'pending';
     return res.status(200).json({
       status: 'success',
       data: {
-        status: 'pending',
+        status,
         documents: [],
-        verificationSteps: {}
-      }
+        verificationSteps: {},
+      },
     });
   }
 
@@ -132,17 +152,20 @@ export const getKYCStatus = catchAsync(async (req, res, next) => {
     verified: doc.verified
   }));
 
+  const resolvedStatus = useProfileStatus ? profileStatus : kycRecord.status;
+
   res.status(200).json({
     status: 'success',
     data: {
       kycId: kycRecord._id,
-      status: kycRecord.status,
+      status: resolvedStatus,
       documents: formattedDocuments,
       verificationSteps: kycRecord.verificationSteps,
       submittedAt: kycRecord.submittedAt,
       approvedAt: kycRecord.approvedAt,
-      rejectedAt: kycRecord.rejectedAt,
-      rejectionReason: kycRecord.rejectionReason
+      rejectedAt: resolvedStatus === 'rejected' ? kycRecord.rejectedAt : undefined,
+      rejectionReason:
+        resolvedStatus === 'rejected' ? kycRecord.rejectionReason : undefined,
     }
   });
 });
@@ -150,7 +173,7 @@ export const getKYCStatus = catchAsync(async (req, res, next) => {
 // Upload single document
 export const uploadKYCDocument = catchAsync(async (req, res, next) => {
   const { documentType } = req.body;
-  const sellerId = req.user._id;
+  const sellerId = req.user._id || req.user.id;
   
   if (!req.file) {
     return next(new AppError('No document uploaded', 400));

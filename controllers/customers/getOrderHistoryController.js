@@ -36,12 +36,14 @@ export const getOrderBySessionId = catchAsync(async (req, res, next) => {
   const userIdAlt1 = req.user._id ? String(req.user._id) : null;
   const userIdAlt2 = req.user.id ? String(req.user.id) : null;
   
-  // Log warning if buyer doesn't match, but still return order (session ID is unique and secure)
-  if (orderBuyerStr !== userIdStr && 
-      orderBuyerStr !== userIdAlt1 &&
-      orderBuyerStr !== userIdAlt2) {
-    console.warn(`⚠️ Buyer ID mismatch: Order buyer=${orderBuyerStr}, User ID=${userIdStr}`);
-    // Still return the order if session ID matches (session ID is unique and secure)
+  if (
+    orderBuyerStr !== userIdStr &&
+    orderBuyerStr !== userIdAlt1 &&
+    orderBuyerStr !== userIdAlt2
+  ) {
+    return next(
+      new AppError("You do not have access to this order", 403),
+    );
   }
 
   // ✅ Fetch SellerSettlements for this order to get per-product refund status

@@ -41,8 +41,18 @@ export const getAllSellersWithStats = catchAsync(async (req, res) => {
                 let: { sellerId: "$_id" },
                 pipeline: [
                     { $unwind: "$products" },
-                    { $match: { $expr: { $eq: ["$products.seller", "$$sellerId"] } } },
-                    { $count: "count" }
+                    {
+                        $match: {
+                            $expr: {
+                                $eq: [
+                                    { $toString: "$products.seller" },
+                                    { $toString: "$$sellerId" },
+                                ],
+                            },
+                        },
+                    },
+                    { $group: { _id: "$_id" } },
+                    { $count: "count" },
                 ],
                 as: "orderCountData"
             }
@@ -113,24 +123,27 @@ export const getSellerOrders = catchAsync(async (req, res, next) => {
         return next(new AppError("Seller not found", 404));
     }
 
-    // Match orders containing products from this seller
-    const match = { "products.seller": sellerId };
+    const sellerIdStr = String(sellerId);
 
-    // Note: In multi-vendor setup, we filter by product-level status, not order-level status
-    if (paymentStatus) match.paymentStatus = paymentStatus;
+    // Match orders containing products from this seller (`buyer` on Purchase is a string id only)
+    const baseMatch = { "products.seller": sellerIdStr };
+    if (paymentStatus) baseMatch.paymentStatus = paymentStatus;
 
-    // Search by orderId or buyer info
-    if (search) {
+    let searchMatch = null;
+    if (search && String(search).trim()) {
         const regex = new RegExp(search.trim(), "i");
-        match.$or = [
-            { orderId: regex },
-            { "buyer.firstName": regex },
-            { "buyer.lastName": regex },
-            { "buyer.email": regex },
-        ];
+        searchMatch = {
+            $or: [
+                { orderId: regex },
+                { "buyerData.firstName": regex },
+                { "buyerData.lastName": regex },
+                { "buyerData.email": regex },
+            ],
+        };
     }
 
     const pipeline = [
+        { $match: baseMatch },
         {
             $lookup: {
                 from: "users",
@@ -140,14 +153,14 @@ export const getSellerOrders = catchAsync(async (req, res, next) => {
             },
         },
         { $unwind: "$buyerData" },
-        { $match: match },
+        ...(searchMatch ? [{ $match: searchMatch }] : []),
         { $sort: { createdAt: -1 } },
         { $skip: skip },
         { $limit: limitNum },
         // Unwind products to join with product details
         { $unwind: "$products" },
         // Filter products for this seller again (after match on top level)
-        { $match: { "products.seller": sellerId } },
+        { $match: { "products.seller": sellerIdStr } },
         // Filter by product-level status if provided
         ...(status ? [{ $match: { "products.status": status } }] : []),
 
@@ -155,14 +168,19 @@ export const getSellerOrders = catchAsync(async (req, res, next) => {
         {
             $lookup: {
                 from: "sellersettlements",
-                let: { pId: "$_id", sId: sellerId },
+                let: { pId: "$_id", sId: sellerIdStr },
                 pipeline: [
                     {
                         $match: {
                             $expr: {
                                 $and: [
                                     { $eq: ["$purchaseId", "$$pId"] },
-                                    { $eq: ["$sellerId", "$$sId"] },
+                                    {
+                                        $eq: [
+                                            { $toString: "$sellerId" },
+                                            { $toString: "$$sId" },
+                                        ],
+                                    },
                                 ],
                             },
                         },
@@ -249,18 +267,19 @@ export const getSellerOrders = catchAsync(async (req, res, next) => {
 
     const orders = await Purchase.aggregate(pipeline);
 
-    // Count pipeline for pagination
+    // Count pipeline for pagination (same filters as main query)
     const countPipeline = [
+        { $match: baseMatch },
         {
             $lookup: {
                 from: "users",
                 localField: "buyer",
                 foreignField: "_id",
-                as: "buyer",
+                as: "buyerData",
             },
         },
-        { $unwind: "$buyer" },
-        { $match: match },
+        { $unwind: "$buyerData" },
+        ...(searchMatch ? [{ $match: searchMatch }] : []),
         { $count: "total" },
     ];
 

@@ -11,6 +11,7 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import { fileURLToPath } from "url"; // <-- ES Module
 import AppError from "./utils/apperror.js";
+import { EXPRESS_BODY_PARSER_LIMIT } from "./config/uploadLimits.js";
 // import logger from "./utils/logger.js"; // logger import
 import GlobalError from "./controllers/errorcontroller.js";
 
@@ -97,9 +98,11 @@ app.use(express.static(path.join(__dirname, "public")));
 // Middlewares
 app.use(cookieParser());
 
-// Increase body size limits for file uploads
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+// Global JSON / urlencoded ceiling (see config/uploadLimits.js). Multipart uploads use multer per-route.
+app.use(express.json({ limit: EXPRESS_BODY_PARSER_LIMIT }));
+app.use(
+  express.urlencoded({ extended: true, limit: EXPRESS_BODY_PARSER_LIMIT }),
+);
 
 // CORS configuration - explicitly allow frontend origin
 app.use(

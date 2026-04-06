@@ -435,68 +435,121 @@ export const getSellerOrdersPerfect = catchAsync(async (req, res, next) => {
   });
 });
 
+const PRODUCT_LINE_STATUSES = [
+  "new",
+  "processing",
+  "shipped",
+  "in_transit",
+  "delivered",
+  "cancelled",
+  "refunded",
+  "return_requested",
+  "return_approved",
+  "return_rejected",
+];
+
+function normalizeLineItemStatus(value) {
+  if (value == null || typeof value !== "string") return null;
+  const t = value.trim().toLowerCase().replace(/-/g, "_");
+  if (t === "intransit") return "in_transit";
+  return t;
+}
+
 // ✅ Seller updates product status & auto-updates overall order status
 
 export const updateOrderStatus = catchAsync(async (req, res, next) => {
-  const sellerId = req.user.id; // seller UUID
+  const sellerId = String(req.user._id || req.user.id);
   const { orderId } = req.params;
   const { productId, status, location, deliveryTime, deliveryDate } = req.body;
 
   if (!status) return next(new AppError("Status is required", 400));
   if (!productId) return next(new AppError("productId is required", 400));
 
+  const normStatus = normalizeLineItemStatus(status);
+  if (!normStatus || !PRODUCT_LINE_STATUSES.includes(normStatus)) {
+    return next(
+      new AppError(
+        `Invalid status "${status}". Allowed: ${PRODUCT_LINE_STATUSES.join(", ")}`,
+        400,
+      ),
+    );
+  }
+
   // 1️⃣ Find order by orderId
   const order = await Purchase.findOne({ _id: orderId });
   if (!order) return next(new AppError("Order not found", 404));
 
-  // 2️⃣ Find specific product for this seller
+  // 2️⃣ Find specific product for this seller (IDs may be ObjectId or string)
   const product = order.products.find(
-    (p) => p.product === productId && p.seller === sellerId,
+    (p) =>
+      String(p.product) === String(productId) &&
+      String(p.seller) === String(sellerId),
   );
   if (!product)
     return next(new AppError("You cannot update this product", 403));
 
-  // ❗️3️⃣ PREVENT SAME STATUS UPDATE AGAIN
-  if (product.status === status) {
-    return next(
-      new AppError(`Status "${status}" is already applied earlier!`, 400),
-    );
+  const currentNorm =
+    normalizeLineItemStatus(product.status) ||
+    String(product.status || "new").toLowerCase();
+
+  // Idempotent: UI may re-send the same status; avoid 400 + confusing toast
+  if (currentNorm === normStatus) {
+    return res.status(200).json({
+      status: "success",
+      message: "Product status is already up to date.",
+      unchanged: true,
+      data: order,
+    });
   }
 
   // 4️⃣ Update product status and timeline (individual per seller)
-  product.status = status;
+  product.status = normStatus;
   product.timeline.push({
-    event: status,
+    event: normStatus,
     timestamp: new Date(),
     location: location || "Seller Hub",
   });
 
   // 4.5️⃣ 🔥 GLOBAL ORDER TIMELINE UPDATE (top level) - include seller and product info
   order.orderTimeline.push({
-    event: status,
+    event: normStatus,
     timestamp: new Date(),
     location: location || "Seller Hub",
     seller: sellerId,
     product: productId,
-    note: `Seller ${sellerId} updated product ${productId} to "${status}"`,
+    note: `Seller ${sellerId} updated product ${productId} to "${normStatus}"`,
   });
 
   // 5️⃣ Update overall order status (aggregate based on ALL products)
   // In multi-vendor app, overall status reflects the collective state
   const allDelivered = order.products.every((p) => p.status === "delivered");
+  const anyCancelled = order.products.some((p) => p.status === "cancelled");
+  const allCancelled =
+    order.products.length > 0 &&
+    order.products.every((p) => p.status === "cancelled");
   const anyShipped = order.products.some((p) => p.status === "shipped");
   const anyInTransit = order.products.some((p) => p.status === "in_transit");
+  const anyProcessing = order.products.some((p) => p.status === "processing");
 
   if (allDelivered) {
     order.status = "delivered";
+  } else if (allCancelled) {
+    order.status = "cancelled";
   } else if (anyInTransit) {
     order.status = "in_transit";
   } else if (anyShipped) {
     order.status = "shipped";
+  } else if (anyProcessing) {
+    order.status = "processing";
+  } else if (anyCancelled) {
+    // Mixed states (e.g. some cancelled, some active) — avoid lying as "new"
+    order.status = "processing";
   }
-  // Removed: else { order.status = status; }
-  // Order status should NOT be directly set to a single seller's status
-  // It should only reflect the aggregate state of all products
+  // Order status reflects aggregate line items, not a single seller update
+
+  if (!order.shippingAddress) {
+    order.shippingAddress = {};
+  }
 
   // 6️⃣ Delivery Time - only set if not already set (prevent seller override in multi-vendor)
   if (deliveryTime && !order.shippingAddress.deliveryTime) {
@@ -539,6 +592,7 @@ export const updateOrderStatus = catchAsync(async (req, res, next) => {
       const statusMessages = {
         processing: "Your order is now being processed",
         shipped: "Your order has been shipped",
+        in_transit: "Your order is on the way",
         delivered: "Your order has been delivered",
         new: "Your order has been confirmed",
         cancelled: "Your order has been cancelled",
@@ -546,8 +600,8 @@ export const updateOrderStatus = catchAsync(async (req, res, next) => {
       };
 
       const statusMessage =
-        statusMessages[status] ||
-        `Your order status has been updated to ${status}`;
+        statusMessages[normStatus] ||
+        `Your order status has been updated to ${normStatus}`;
 
       // Create notification in database
       await Notification.create({
@@ -559,7 +613,7 @@ export const updateOrderStatus = catchAsync(async (req, res, next) => {
         order: String(order._id),
         productId: productId,
         metadata: {
-          status: status,
+          status: normStatus,
           productName: productInfo?.title || productInfo?.name || "Product",
           trackingNumber: order.trackingNumber || null,
         },
@@ -574,7 +628,7 @@ export const updateOrderStatus = catchAsync(async (req, res, next) => {
 
   res.status(200).json({
     status: "success",
-    message: `Product status updated to "${status}" and order status auto-updated to "${order.status}". Customer notification sent.`,
+    message: `Product status updated to "${normStatus}" and order status auto-updated to "${order.status}". Customer notification sent.`,
     data: order,
   });
 });

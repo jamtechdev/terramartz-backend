@@ -18,7 +18,7 @@ const safeObjectId = (id) => {
 
 // ✅ Get Seller Performance Stats
 export const getSellerPerformanceStats = catchAsync(async (req, res, next) => {
-  const sellerId = req.user._id;
+  const sellerId = req.user._id || req.user.id;
   const safeId = safeObjectId(sellerId);
 
   // Total Products
@@ -57,7 +57,7 @@ export const getSellerPerformanceStats = catchAsync(async (req, res, next) => {
 
 // ✅ Get Seller Complete Analytics (Lifetime)
 export const getSellerCompleteAnalytics = catchAsync(async (req, res, next) => {
-  const sellerId = req.user._id;
+  const sellerId = req.user._id || req.user.id;
   const { startDate, endDate, year } = req.query;
 
   // Get year from query or default to current year
@@ -267,7 +267,7 @@ export const getSellerCompleteAnalytics = catchAsync(async (req, res, next) => {
 });
 // 127.0.0.1:7345/api/seller/dashboard/analytics?startDate=2025-07-01&endDate=2025-10-20&filterProducts=true
 export const getSellerDashboardAnalytics = catchAsync(async (req, res) => {
-  const sellerId = req.user._id;
+  const sellerId = req.user._id || req.user.id;
     const { startDate, endDate, filterProducts = "false" } = req.query;
 
     // console.log("\n========== SELLER DASHBOARD ANALYTICS ==========");
@@ -830,7 +830,7 @@ export const getBestSellers = catchAsync(async (req, res, next) => {
 
 // ✅ Get Seller Earnings (Today and Overall)
 export const getSellerEarnings = catchAsync(async (req, res, next) => {
-  const sellerId = req.user._id.toString();
+  const sellerId = String(req.user._id || req.user.id);
 
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());

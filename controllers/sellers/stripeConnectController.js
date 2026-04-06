@@ -7,7 +7,7 @@ const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
 // Add this function to check KYC status before allowing Stripe operations
 export const checkKYCStatus = catchAsync(async (req, res, next) => {
-  const seller = await User.findById(req.user._id);
+  const seller = await User.findById(req.user._id || req.user.id);
 
   if (seller.sellerProfile?.kycStatus !== "approved") {
     return next(
@@ -78,7 +78,7 @@ export const createStripeAccount = catchAsync(async (req, res, next) => {
     return next(new AppError("Only sellers can create Stripe accounts", 403));
   }
 
-  const seller = await User.findById(req.user._id);
+  const seller = await User.findById(req.user._id || req.user.id);
   if (!seller) {
     return next(new AppError("Seller not found", 404));
   }
@@ -178,7 +178,7 @@ export const getOnboardingLink = catchAsync(async (req, res, next) => {
     return next(new AppError("Only sellers can access onboarding", 403));
   }
 
-  const seller = await User.findById(req.user._id);
+  const seller = await User.findById(req.user._id || req.user.id);
   if (!seller) {
     return next(new AppError("Seller not found", 404));
   }
@@ -230,7 +230,7 @@ export const getAccountStatus = catchAsync(async (req, res, next) => {
     return next(new AppError("Only sellers can check account status", 403));
   }
 
-  const seller = await User.findById(req.user._id);
+  const seller = await User.findById(req.user._id || req.user.id);
   if (!seller) return next(new AppError("Seller not found", 404));
 
   const accountId = seller.sellerProfile?.stripeAccountId;
@@ -329,7 +329,7 @@ export const getDashboardLink = catchAsync(async (req, res, next) => {
     return next(new AppError("Only sellers can access dashboard", 403));
   }
 
-  const seller = await User.findById(req.user._id);
+  const seller = await User.findById(req.user._id || req.user.id);
   if (!seller) {
     return next(new AppError("Seller not found", 404));
   }
@@ -502,7 +502,7 @@ const notifySellerAccountActive = async (seller) => {
 };
 
 export const getRemediationLink = catchAsync(async (req, res, next) => {
-  const seller = await User.findById(req.user._id);
+  const seller = await User.findById(req.user._id || req.user.id);
 
   if (!seller?.sellerProfile?.stripeAccountId) {
     return next(new AppError("No Stripe account found", 404));

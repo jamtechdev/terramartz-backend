@@ -16,14 +16,13 @@ export const createReview = catchAsync(async (req, res, next) => {
 
   try {
     const { productId, rating, message } = req.body;
-    const userId = req.user._id;
+    const userIdString = String(req.user._id || req.user.id);
 
     // 1️⃣ Check product exists
     const product = await Product.findById(productId).session(session);
     if (!product) throw new AppError("Product not found.", 404);
 
     // 1.5️⃣ Check if user is the seller (can't review own product)
-    const userIdString = String(userId);
     const productSellerId = String(product.createdBy);
     if (userIdString === productSellerId) {
       throw new AppError("You cannot review your own product.", 403);
@@ -31,7 +30,7 @@ export const createReview = catchAsync(async (req, res, next) => {
 
     // 2️⃣ Check if user purchased the product
     const purchased = await Purchase.findOne({
-      buyer: userId,
+      buyer: userIdString,
       "products.product": productId,
     }).session(session);
 
@@ -44,7 +43,7 @@ export const createReview = catchAsync(async (req, res, next) => {
     // 3️⃣ Check if already reviewed
     const existingReview = await Review.findOne({
       product: productId,
-      user: userId,
+      user: userIdString,
     }).session(session);
     if (existingReview)
       throw new AppError("You already reviewed this product.", 400);
@@ -54,7 +53,7 @@ export const createReview = catchAsync(async (req, res, next) => {
       [
         {
           product: productId,
-          user: userId,
+          user: userIdString,
           rating,
           message,
         },
@@ -143,12 +142,16 @@ export const updateReview = catchAsync(async (req, res, next) => {
   try {
     const { reviewId } = req.params;
     const { rating, message } = req.body;
-    const userId = req.user._id;
+    const userKeys = [
+      ...new Set(
+        [req.user._id, req.user.id].filter(Boolean).map((x) => String(x)),
+      ),
+    ];
 
     // Find review
     const review = await Review.findOne({
       _id: reviewId,
-      user: userId,
+      user: { $in: userKeys },
     }).session(session);
 
     if (!review) {
@@ -199,12 +202,16 @@ export const deleteReview = catchAsync(async (req, res, next) => {
 
   try {
     const { reviewId } = req.params;
-    const userId = req.user._id;
+    const userKeys = [
+      ...new Set(
+        [req.user._id, req.user.id].filter(Boolean).map((x) => String(x)),
+      ),
+    ];
 
     // Find review
     const review = await Review.findOne({
       _id: reviewId,
-      user: userId,
+      user: { $in: userKeys },
     }).session(session);
 
     if (!review) {

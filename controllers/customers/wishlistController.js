@@ -4,9 +4,22 @@ import { getPresignedUrl } from "../../utils/awsS3.js";
 import catchAsync from "../../utils/catchasync.js";
 import AppError from "../../utils/apperror.js";
 
+function wishlistUserId(req) {
+  return String(req.user._id || req.user.id);
+}
+
+/** Match legacy rows where user was stored as ObjectId vs string */
+function wishlistUserKeys(req) {
+  return [
+    ...new Set(
+      [req.user._id, req.user.id].filter(Boolean).map((x) => String(x)),
+    ),
+  ];
+}
+
 // Add product to wishlist
 export const addToWishlist = catchAsync(async (req, res, next) => {
-  const userId = req.user._id;
+  const userId = wishlistUserId(req);
   const { productId } = req.params;
 
   const product = await Product.findById(productId);
@@ -32,7 +45,7 @@ export const addToWishlist = catchAsync(async (req, res, next) => {
 
 // Remove product from wishlist
 export const removeFromWishlist = catchAsync(async (req, res, next) => {
-  const userId = req.user._id;
+  const userId = wishlistUserId(req);
   const { productId } = req.params;
 
   const deleted = await WishlistProduct.findOneAndDelete({
@@ -69,9 +82,11 @@ export const removeFromWishlist = catchAsync(async (req, res, next) => {
 // });
 
 export const getWishlist = catchAsync(async (req, res, next) => {
-  const userId = req.user._id;
+  const userId = wishlistUserId(req);
 
-  const wishlistItems = await WishlistProduct.find({ user: userId }).populate({
+  const wishlistItems = await WishlistProduct.find({
+    user: { $in: wishlistUserKeys(req) },
+  }).populate({
     path: "product",
     select:
       "title slug price stockQuantity productImages organic featured category",
@@ -94,14 +109,14 @@ export const getWishlist = catchAsync(async (req, res, next) => {
 
         // Product images
         if (product?.productImages?.length) {
-        const presignedImages = await Promise.all(
-          product.productImages.map(async (imgKey) => {
-            const url = await getPresignedUrl(`products/${imgKey}`);
-            return url || imgKey; // fallback
-          })
-        );
-        product.productImages = presignedImages;
-      }
+          const presignedImages = await Promise.all(
+            product.productImages.map(async (imgKey) => {
+              const url = await getPresignedUrl(`products/${imgKey}`);
+              return url || imgKey;
+            }),
+          );
+          product.productImages = presignedImages;
+        }
 
       // Category image
       if (product?.category?.image) {
@@ -127,13 +142,13 @@ export const getWishlist = catchAsync(async (req, res, next) => {
 // Get users who favorited a specific product (for sellers)
 export const getProductFavorites = catchAsync(async (req, res, next) => {
   const { productId } = req.params;
-  const sellerId = req.user._id;
+  const sellerId = String(req.user._id || req.user.id);
 
   // Verify that the product belongs to the seller
   const product = await Product.findById(productId);
   if (!product) return next(new AppError("Product not found", 404));
   
-  if (product.createdBy.toString() !== sellerId.toString()) {
+  if (String(product.createdBy) !== sellerId) {
     return next(new AppError("You can only view favorites for your own products", 403));
   }
 
@@ -166,10 +181,12 @@ export const getProductFavorites = catchAsync(async (req, res, next) => {
 
 // Get all products favorited by users (for sellers - to see which of their products are favorited)
 export const getSellerProductFavorites = catchAsync(async (req, res, next) => {
-  const sellerId = req.user._id;
+  const sellerId = String(req.user._id || req.user.id);
 
   // Get all products created by this seller
-  const sellerProducts = await Product.find({ createdBy: sellerId }).select("_id title");
+  const sellerProducts = await Product.find({
+    createdBy: sellerId,
+  }).select("_id title");
 
   const productIds = sellerProducts.map((p) => p._id.toString());
 
@@ -190,6 +207,7 @@ export const getSellerProductFavorites = catchAsync(async (req, res, next) => {
   // Group by product
   const productFavoritesMap = {};
   favorites.forEach((fav) => {
+    if (!fav.product) return;
     const productId = fav.product._id.toString();
     if (!productFavoritesMap[productId]) {
       productFavoritesMap[productId] = {

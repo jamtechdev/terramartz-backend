@@ -7,10 +7,14 @@ import AppError from "../../utils/apperror.js";
 // 🔹 Get all reviews of the currently logged-in user
 
 export const getCustomerReviews = catchAsync(async (req, res, next) => {
-  const userId = req.user._id;
+  const userKeys = [
+    ...new Set(
+      [req.user._id, req.user.id].filter(Boolean).map((x) => String(x)),
+    ),
+  ];
 
-  // ✅ Step 1: Base Query - শুধুমাত্র logged-in user এর review
-  let query = Review.find({ user: userId });
+  // ✅ Step 1: Base Query — logged-in user (string/ObjectId-shaped ids)
+  let query = Review.find({ user: { $in: userKeys } });
 
   // ✅ Step 2: Filtering, Sorting, Pagination
   const features = new APIFeatures(query, req.query).filter().sort().paginate();
@@ -52,7 +56,7 @@ export const getCustomerReviews = catchAsync(async (req, res, next) => {
   );
 
   // ✅ Step 4: Get total count for pagination info
-  const totalReviews = await Review.countDocuments({ user: userId });
+  const totalReviews = await Review.countDocuments({ user: { $in: userKeys } });
 
   // ✅ Step 5: Send Response (structure unchanged)
   res.status(200).json({

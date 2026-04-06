@@ -1,5 +1,5 @@
 import express from "express";
-import { upload } from "../../utils/multerConfig.js";
+import { profilePictureUpload } from "../../utils/multerConfig.js";
 import {
   updatePassword,
   protect,
@@ -24,7 +24,7 @@ router.route("/updateMyPassword").patch(protect, updatePassword);
 router.post(
   "/profile/update",
   protect,
-  upload.fields([{ name: "profilePicture", maxCount: 1 }]),
+  profilePictureUpload.fields([{ name: "profilePicture", maxCount: 1 }]),
   startUpdateVerification
 );
 router.post("/profile/update/verify-email", protect, verifyEmailOtp);

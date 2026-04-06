@@ -67,16 +67,8 @@ const purchaseSchema = new mongoose.Schema(
       country: String,
       shippingMethod: String,
       shippingCost: Number,
-      deliveryTime: String, // estimated delivery
+      deliveryTime: String, // estimated delivery (ISO string or display text)
       deliveryDate: Date,
-      // deliveryTime: {
-      //   type: Date,
-      //   default: () => {
-      //     const now = new Date();
-      //     now.setDate(now.getDate() + 2); // 2 দিন add
-      //     return now;
-      //   },
-      // },
     },
 
     // ✅ Total amount & payment
@@ -85,8 +77,6 @@ const purchaseSchema = new mongoose.Schema(
       type: String,
       enum: [
         "pending",
-        "paid",
-        "failed",
         "paid",
         "failed",
         "refunded",
@@ -101,6 +91,12 @@ const purchaseSchema = new mongoose.Schema(
       unique: true,
       sparse: true,
     },
+    /** Set when known (e.g. from Stripe charge) — optional lookup for disputes/webhooks */
+    chargeId: {
+      type: String,
+      index: true,
+      sparse: true,
+    },
     checkoutSessionId: {
       type: String,
       index: true,
@@ -108,17 +104,20 @@ const purchaseSchema = new mongoose.Schema(
     },
     paymentMethod: { type: String, default: "Credit Card" },
 
-    // ✅ Order status & tracking
+    // ✅ Order-level status (aggregated from line items; must include in_transit for seller updates)
     status: {
       type: String,
       enum: [
         "new",
+        "processing",
         "shipped",
         "in_transit",
         "delivered",
         "cancelled",
-        "processing",
         "refunded",
+        "return_requested",
+        "return_approved",
+        "return_rejected",
       ],
       default: "new",
     },
@@ -137,12 +136,16 @@ const purchaseSchema = new mongoose.Schema(
       },
     ],
 
-    // ✅ Overall order timeline (optional summary)
+    // ✅ Overall order timeline
     orderTimeline: [
       {
-        event: { type: String, required: true }, // e.g., "Order Confirmed"
+        event: { type: String, required: true },
         timestamp: { type: Date, default: Date.now },
         location: String,
+        notes: String,
+        seller: { type: String, ref: "User" },
+        product: { type: String, ref: "Product" },
+        note: String, // legacy alias used in some controllers
       },
     ],
     refundAmount: {
@@ -169,9 +172,9 @@ const purchaseSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    // Stripe sends many values (needs_response, under_review, won, lost, …) — keep as string
     disputeStatus: {
       type: String,
-      enum: ["none", "under_review", "won", "lost", "warning_closed"],
       default: "none",
     },
     disputeReason: {
@@ -188,22 +191,6 @@ const purchaseSchema = new mongoose.Schema(
       type: Date,
     },
 
-    // 🔹 UPDATE your existing status enum to include refunded:
-    status: {
-      type: String,
-      enum: [
-        "new",
-        "processing",
-        "shipped",
-        "delivered",
-        "cancelled",
-        "refunded",
-        "return_requested",
-        "return_approved",
-        "return_rejected",
-      ],
-      default: "new",
-    },
     platformFeeAmount: {
       type: Number,
       default: 0,
@@ -211,6 +198,16 @@ const purchaseSchema = new mongoose.Schema(
     platformFeeRefunded: {
       type: Number,
       default: 0,
+    },
+    /** Cumulative charge.amount_refunded (USD) last applied in handleRefund — avoids double-applying webhooks */
+    stripeRefundSyncedTotal: {
+      type: Number,
+      default: 0,
+    },
+    /** Stripe refund ids (re_…) recorded when handling refund.created — idempotent webhook retries */
+    processedStripeRefundIds: {
+      type: [String],
+      default: [],
     },
   },
   { timestamps: true },

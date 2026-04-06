@@ -6,6 +6,8 @@ import { User } from "../../models/users.js";
 import { Admin } from "../../models/super-admin/admin.js";
 import { getOnlineUsers } from "../../utils/socket.js";
 
+const authUserId = (req) => String(req.user._id || req.user.id);
+
 const resolveUserType = async (userId) => {
   const user = await User.findOne({ _id: userId }).select(
     "_id role firstName lastName",
@@ -17,14 +19,14 @@ const resolveUserType = async (userId) => {
 };
 
 export const startConversation = catchAsync(async (req, res, next) => {
-  const { receiverId, senderId, orderId } = req.body;
-  // const senderId = req.user._id;
+  const { receiverId, orderId } = req.body;
+  const senderId = authUserId(req);
 
-  if (!receiverId || !senderId) {
-    return next(new AppError("senderId and receiverId are required", 400));
+  if (!receiverId) {
+    return next(new AppError("receiverId is required", 400));
   }
 
-  if (senderId === receiverId) {
+  if (String(receiverId) === senderId) {
     return next(new AppError("Cannot start a conversation with yourself", 400));
   }
 
@@ -34,13 +36,21 @@ export const startConversation = catchAsync(async (req, res, next) => {
   if (!senderInfo) return next(new AppError("Sender not found", 404));
   if (!receiverInfo) return next(new AppError("Receiver not found", 404));
 
+  const senderNorm = String(senderId).trim();
+  const receiverNorm = String(receiverId).trim();
+
+  // Multi-vendor orders: one conversation per (orderId + buyer + seller), not per order alone
   let findQuery;
 
   if (orderId) {
-    findQuery = { orderId, isActive: true };
+    findQuery = {
+      orderId,
+      isActive: true,
+      "participants.userId": { $all: [senderNorm, receiverNorm] },
+    };
   } else {
     findQuery = {
-      "participants.userId": { $all: [senderId, receiverId] },
+      "participants.userId": { $all: [senderNorm, receiverNorm] },
       orderId: null,
       isActive: true,
     };
@@ -96,8 +106,7 @@ export const startConversation = catchAsync(async (req, res, next) => {
 });
 
 export const getMyConversations = catchAsync(async (req, res) => {
-  const userId = req.query.userId || req.body.userId;
-  // const userId = req.user._id;
+  const userId = authUserId(req);
   const page = parseInt(req.query.page, 10) || 1;
   const limit = parseInt(req.query.limit, 10) || 20;
   const skip = (page - 1) * limit;
@@ -177,8 +186,7 @@ export const getMyConversations = catchAsync(async (req, res) => {
 
 export const getMessages = catchAsync(async (req, res, next) => {
   const { conversationId } = req.params;
-  const userId = req.query.userId || req.body.userId;
-  // const userId = req.user._id;
+  const userId = authUserId(req);
   const page = parseInt(req.query.page, 10) || 1;
   const limit = parseInt(req.query.limit, 10) || 50;
   const skip = (page - 1) * limit;
@@ -188,16 +196,13 @@ export const getMessages = catchAsync(async (req, res, next) => {
     return next(new AppError("Conversation not found", 404));
   }
 
-  if (userId) {
-    const trimmedUserId = userId.trim();
-    const isParticipant = conversation.participants.some(
-      (p) => p.userId.trim() === trimmedUserId,
+  const isParticipant = conversation.participants.some(
+    (p) => String(p.userId).trim() === String(userId).trim(),
+  );
+  if (!isParticipant) {
+    return next(
+      new AppError("You are not a participant of this conversation", 403),
     );
-    if (!isParticipant) {
-      return next(
-        new AppError("You are not a participant of this conversation", 403),
-      );
-    }
   }
 
   const messages = await Message.find({
@@ -225,8 +230,7 @@ export const getMessages = catchAsync(async (req, res, next) => {
 
 export const deleteConversation = catchAsync(async (req, res, next) => {
   const { conversationId } = req.params;
-  const userId = req.query.userId || req.body.userId;
-  // const userId = req.user._id;
+  const userId = authUserId(req);
 
   const conversation = await Conversation.findOne({ _id: conversationId });
   if (!conversation) {
@@ -234,7 +238,7 @@ export const deleteConversation = catchAsync(async (req, res, next) => {
   }
 
   const isParticipant = conversation.participants.some(
-    (p) => p.userId === userId,
+    (p) => String(p.userId) === String(userId),
   );
   if (!isParticipant) {
     return next(

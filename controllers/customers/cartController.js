@@ -4,6 +4,15 @@ import catchAsync from "../../utils/catchasync.js";
 import AppError from "../../utils/apperror.js";
 import { getPresignedUrl } from "../../utils/awsS3.js";
 
+/** Cart.user is stored as string; JWT may expose _id vs id in different shapes */
+function cartUserKeys(req) {
+  return [
+    ...new Set(
+      [req.user._id, req.user.id].filter(Boolean).map((x) => String(x)),
+    ),
+  ];
+}
+
 // 1️⃣ Add to Cart
 export const addToCart = catchAsync(async (req, res, next) => {
   const { product: productId, quantity = 1 } = req.body;
@@ -77,7 +86,7 @@ export const updateCartItem = catchAsync(async (req, res, next) => {
 
   const cartItem = await Cart.findOne({
     _id: req.params.id,
-    user: req.user._id,
+    user: { $in: cartUserKeys(req) },
   }).populate("product");
 
   if (!cartItem) return next(new AppError("Cart item not found", 404));
@@ -102,7 +111,7 @@ export const updateCartItem = catchAsync(async (req, res, next) => {
 export const deleteCartItem = catchAsync(async (req, res, next) => {
   const cartItem = await Cart.findOneAndDelete({
     _id: req.params.id,
-    user: req.user._id,
+    user: { $in: cartUserKeys(req) },
   });
   if (!cartItem) return next(new AppError("Cart item not found", 404));
 
@@ -113,7 +122,7 @@ export const deleteCartItem = catchAsync(async (req, res, next) => {
 export const getCartItem = catchAsync(async (req, res, next) => {
   const cartItem = await Cart.findOne({
     _id: req.params.id,
-    user: req.user._id,
+    user: { $in: cartUserKeys(req) },
   }).populate({
     path: "product",
     populate: { path: "category" }
@@ -138,7 +147,7 @@ export const getCartItem = catchAsync(async (req, res, next) => {
 // 5️⃣ Get All Cart Items for current user
 
 export const getAllCartItems = catchAsync(async (req, res, next) => {
-  const cartItems = await Cart.find({ user: req.user._id }).populate({
+  const cartItems = await Cart.find({ user: { $in: cartUserKeys(req) } }).populate({
     path: "product",
     populate: { path: "category" }
   });
@@ -167,7 +176,7 @@ export const getAllCartItems = catchAsync(async (req, res, next) => {
 
 // 6️⃣ Clear All Cart Items for current user
 export const clearAllCartItems = catchAsync(async (req, res, next) => {
-  const deleted = await Cart.deleteMany({ user: req.user._id });
+  const deleted = await Cart.deleteMany({ user: { $in: cartUserKeys(req) } });
 
   res.status(200).json({
     status: "success",

@@ -461,6 +461,22 @@ export const getFeatureProducts = catchAsync(async (req, res, next) => {
     if (column4) usedProductIds.push(column4._id);
   }
 
+  /** Drop category when the document is missing (deleted) or only an id string leaked through. */
+  const sanitizeCategoryOnProduct = (product) => {
+    if (!product || typeof product !== "object") return;
+    const c = product.category;
+    if (c == null) {
+      product.category = null;
+      return;
+    }
+    if (typeof c === "object" && typeof c.name === "string" && c.name.trim()) {
+      return;
+    }
+    product.category = null;
+  };
+
+  [column1, column2, column3, column4].forEach(sanitizeCategoryOnProduct);
+
   res.status(200).json({
     status: "success",
     data: { column1, column2, column3, column4 },

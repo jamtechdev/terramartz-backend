@@ -1,10 +1,13 @@
 import express from "express";
 import * as chatController from "../../controllers/common/chatController.js";
-// import { protect } from "../../controllers/authController.js";
+import { protect } from "../../controllers/authController.js";
 
 const router = express.Router();
 
-// router.use(protect);
+// Public: online presence check. All other chat endpoints require a user JWT.
+router.post("/online-status", chatController.getOnlineStatus);
+
+router.use(protect);
 
 router.post("/conversations", chatController.startConversation);
 router.post("/conversation", chatController.startConversation);
@@ -17,7 +20,5 @@ router.get("/conversation/:conversationId/messages", chatController.getMessages)
 
 router.delete("/conversations/:conversationId", chatController.deleteConversation);
 router.delete("/conversation/:conversationId", chatController.deleteConversation);
-
-router.post("/online-status", chatController.getOnlineStatus);
 
 export default router;
