@@ -5,7 +5,7 @@ import {
   getAccountStatus,
   getDashboardLink,
   getRemediationLink,
-  // checkKYCStatus,
+  checkKYCStatus,
 } from "../../controllers/sellers/stripeConnectController.js";
 import { restrictToSeller } from "../../middleware/seller/restrictToSeller.js";
 import { protect } from "../../controllers/authController.js";
@@ -16,20 +16,13 @@ const router = express.Router();
 router.use(protect);
 router.use(restrictToSeller);
 
-// Create Stripe Express Account
-router.post("/create-account", createStripeAccount);
-// Check KYC Status after creating Stripe Express Account
-// router.post("/create-account", checkKYCStatus, createStripeAccount);
+// Mutating / sensitive Connect actions require approved KYC (account-status stays open for UI polling)
+router.post("/create-account", checkKYCStatus, createStripeAccount);
+router.get("/onboarding-link", checkKYCStatus, getOnboardingLink);
+router.get("/dashboard-link", checkKYCStatus, getDashboardLink);
+router.get("/remediation-link", checkKYCStatus, getRemediationLink);
 
-// Get Onboarding Link
-router.get("/onboarding-link", getOnboardingLink);
-
-// Get Account Status
+// Get Account Status (no KYC gate — dashboard can show Connect state before/after KYC)
 router.get("/account-status", getAccountStatus);
-
-// Get Dashboard Link (Stripe Express Dashboard)
-router.get("/dashboard-link", getDashboardLink);
-
-router.get("/remediation-link", getRemediationLink);
 
 export default router;

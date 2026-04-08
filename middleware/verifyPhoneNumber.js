@@ -54,9 +54,11 @@ export const sendPhoneNumberVerificationOtp = async (req, res, next) => {
 };
 
 export const verifyPhoneNumber = async (req, res, next) => {
-  const { phoneNumber, phoneOtp } = req.body;
+  const { phoneNumber, phoneOtp, phone, otp } = req.body;
+  const num = phoneNumber || phone;
+  const code = phoneOtp || otp;
   try {
-    const verifyDocs = await Verify.findOne({ phoneNumber: phoneNumber });
+    const verifyDocs = await Verify.findOne({ phoneNumber: num });
 
     if (!verifyDocs)
       return next(
@@ -64,16 +66,19 @@ export const verifyPhoneNumber = async (req, res, next) => {
       );
 
     if (
-      verifyDocs.phoneOtp !== phoneOtp ||
+      String(verifyDocs.phoneOtp) !== String(code) ||
       new Date(verifyDocs.phoneOtpExpiresAt).getTime() < Date.now()
     ) {
       return next(new AppError("Invalid or expired OTP", 400));
     }
 
-    // delete document
-    await Verify.findByIdAndDelete(verifyDocs._id); // testing hoye gale comment tule den....
+    await Verify.findByIdAndDelete(verifyDocs._id);
 
-    //3)if everythings ok
+    await User.updateOne(
+      { phoneNumber: num },
+      { $set: { phoneVerified: true } },
+    );
+
     res.status(200).json({
       phoneNumberVerified: true,
       message: "Your phone Number has been successfully verified! ",

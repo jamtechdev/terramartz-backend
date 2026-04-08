@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import { Verify } from "../models/verify.js";
+import { User } from "../models/users.js";
 import AppError from "../utils/apperror.js";
 import Email from "../utils/vefiryEmail.js";
 
@@ -43,9 +44,9 @@ export const sendEmailVerificationOtp = async (req, res, next) => {
   }
 };
 export const verifyEmail = async (req, res, next) => {
-  // Accept both emailOtp (camelCase) and emailotp (lowercase) from frontend
-  const { email, emailOtp, emailotp } = req.body;
-  const otp = emailOtp || emailotp; // Use whichever is provided
+  // Accept emailOtp, emailotp, or otp from clients
+  const { email, emailOtp, emailotp, otp: bodyOtp } = req.body;
+  const otp = emailOtp || emailotp || bodyOtp;
   
   if (!email || !otp) {
     return next(new AppError("Email and OTP are required", 400));
@@ -95,7 +96,17 @@ export const verifyEmail = async (req, res, next) => {
     // delete document
     await Verify.findByIdAndDelete(verifyDocs._id);
 
-    //3)if everythings ok
+    const normalized = String(email).toLowerCase().trim();
+    await User.updateOne(
+      { email: normalized },
+      {
+        $set: {
+          emailVerified: true,
+          isAccountVerified: true,
+        },
+      },
+    );
+
     res.status(200).json({
       emailVerified: true,
       message: "Your email has been successfully verified! ",

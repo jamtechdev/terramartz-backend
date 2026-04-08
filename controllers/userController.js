@@ -131,22 +131,28 @@ export const startUpdateVerification = catchAsync(async (req, res, next) => {
       await user.save();
     }
 
-    const updatedUser = await User.findByIdAndUpdate(
-      userId,
-      {
-        firstName,
-        lastName,
-        bio,
-        emailNotifications,
-        pushNotifications,
-        marketingEmails,
-        notificationFrequency,
-        language,
-        currency,
-        defaultAddress,
-      },
-      { new: true },
-    );
+    const directUpdate = {
+      firstName,
+      lastName,
+      bio,
+      emailNotifications,
+      pushNotifications,
+      marketingEmails,
+      notificationFrequency,
+      language,
+      currency,
+      defaultAddress,
+    };
+
+    if (user.role === "seller" && businessName) {
+      directUpdate["businessDetails.businessName"] = businessName;
+      directUpdate["sellerProfile.shopName"] = businessName;
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(userId, directUpdate, {
+      new: true,
+      runValidators: true,
+    });
 
     // Apply presigned URL to profile picture
     const userObj = updatedUser.toObject();
@@ -395,9 +401,11 @@ export const verifyEmailOtp = async (req, res, next) => {
 
     if (!verification) return next(new AppError("Verification not found", 404));
 
+    const otpOk =
+      verification.emailOtp &&
+      String(verification.emailOtp).trim() === String(emailOtp || "").trim();
     if (
-      !verification.emailOtp ||
-      verification.emailOtp !== emailOtp ||
+      !otpOk ||
       !verification.emailOtpExpiresAt ||
       verification.emailOtpExpiresAt < Date.now()
     ) {
@@ -450,9 +458,21 @@ export const verifyEmailOtp = async (req, res, next) => {
         updatePayload.profilePicture = verification.pendingData.profilePicture;
       }
 
-      // Add role-specific fields
+      if (
+        typeof verification.pendingData.firstName === "string" &&
+        verification.pendingData.firstName.trim() !== ""
+      ) {
+        updatePayload.firstName = verification.pendingData.firstName.trim();
+      }
+      if (
+        typeof verification.pendingData.lastName === "string" &&
+        verification.pendingData.lastName.trim() !== ""
+      ) {
+        updatePayload.lastName = verification.pendingData.lastName.trim();
+      }
+
+      // Seller shop / business name
       if (isSeller && verification.pendingData.businessName) {
-        // Ensure nested objects exist
         if (!user.businessDetails) {
           updatePayload.businessDetails = {
             businessName: verification.pendingData.businessName,
@@ -470,10 +490,9 @@ export const verifyEmailOtp = async (req, res, next) => {
           updatePayload["sellerProfile.shopName"] =
             verification.pendingData.businessName;
         }
-      } else if (!isSeller) {
-        updatePayload.firstName = verification.pendingData.firstName;
-        updatePayload.lastName = verification.pendingData.lastName;
       }
+
+      updatePayload.emailVerified = true;
 
       await User.findByIdAndUpdate(verification.user, { $set: updatePayload });
 
@@ -500,9 +519,11 @@ export const verifyPhoneOtp = async (req, res, next) => {
 
     if (!verification) return next(new AppError("Verification not found", 404));
 
+    const phoneOtpOk =
+      verification.phoneOtp &&
+      String(verification.phoneOtp).trim() === String(phoneOtp || "").trim();
     if (
-      !verification.phoneOtp ||
-      verification.phoneOtp !== phoneOtp ||
+      !phoneOtpOk ||
       !verification.phoneOtpExpiresAt ||
       verification.phoneOtpExpiresAt < Date.now()
     ) {
@@ -531,9 +552,20 @@ export const verifyPhoneOtp = async (req, res, next) => {
       updatePayload.profilePicture = verification.pendingData.profilePicture;
     }
 
-    // Add role-specific fields
+    if (
+      typeof verification.pendingData.firstName === "string" &&
+      verification.pendingData.firstName.trim() !== ""
+    ) {
+      updatePayload.firstName = verification.pendingData.firstName.trim();
+    }
+    if (
+      typeof verification.pendingData.lastName === "string" &&
+      verification.pendingData.lastName.trim() !== ""
+    ) {
+      updatePayload.lastName = verification.pendingData.lastName.trim();
+    }
+
     if (isSeller && verification.pendingData.businessName) {
-      // Ensure nested objects exist
       if (!user.businessDetails) {
         updatePayload.businessDetails = {
           businessName: verification.pendingData.businessName,
@@ -551,10 +583,10 @@ export const verifyPhoneOtp = async (req, res, next) => {
         updatePayload["sellerProfile.shopName"] =
           verification.pendingData.businessName;
       }
-    } else if (!isSeller) {
-      updatePayload.firstName = verification.pendingData.firstName;
-      updatePayload.lastName = verification.pendingData.lastName;
     }
+
+    updatePayload.emailVerified = true;
+    updatePayload.phoneVerified = true;
 
     await User.findByIdAndUpdate(verification.user, { $set: updatePayload });
 

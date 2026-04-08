@@ -91,8 +91,10 @@ export const signup = catchAsync(async (req, res, next) => {
     const reqBody = {
       ...req.body,
       profilePicture: profilePicturePath,
-      // Skip verification - set account as verified by default
-      isAccountVerified: true,
+      emailVerified: false,
+      phoneVerified: false,
+      isAccountVerified: false,
+      isActive: true,
     };
 
     // যদি seller & business account হয়
@@ -196,6 +198,14 @@ export const protect = catchAsync(async (req, res, next) => {
       new AppError("User recently changed password Please log in again", 401),
     );
   }
+  if (!freshUser.isActive) {
+    return next(
+      new AppError(
+        "Your account has been disabled. Please contact support.",
+        403,
+      ),
+    );
+  }
   req.user = freshUser;
   res.locals.user = freshUser;
   return next();
@@ -230,6 +240,10 @@ export const optionalProtect = catchAsync(async (req, res, next) => {
     //Check if user changed password after the token was issued
     if (freshUser.changedPasswordAfter(decoded.iat)) {
       // Token invalid - allow request to proceed without req.user
+      return next();
+    }
+    // Disabled users should not be treated as authenticated
+    if (!freshUser.isActive) {
       return next();
     }
 
@@ -386,6 +400,14 @@ export const login = catchAsync(async (req, res, next) => {
   if (googleId && provider === "google") {
     let user = await User.findOne({ "socialLogin.googleId": googleId });
     if (!user) return next(new AppError("Google user not found", 404));
+    if (!user.isActive) {
+      return next(
+        new AppError(
+          "Your account has been disabled. Please contact support.",
+          403,
+        ),
+      );
+    }
 
     return createSendToken(user, 200, res);
   }
@@ -394,6 +416,14 @@ export const login = catchAsync(async (req, res, next) => {
   if (facebookId && provider === "facebook") {
     let user = await User.findOne({ "socialLogin.facebookId": facebookId });
     if (!user) return next(new AppError("Facebook user not found", 404));
+    if (!user.isActive) {
+      return next(
+        new AppError(
+          "Your account has been disabled. Please contact support.",
+          403,
+        ),
+      );
+    }
 
     return createSendToken(user, 200, res);
   }
@@ -402,6 +432,14 @@ export const login = catchAsync(async (req, res, next) => {
   if (appleId && provider === "apple") {
     let user = await User.findOne({ "socialLogin.appleId": appleId });
     if (!user) return next(new AppError("Apple user not found", 404));
+    if (!user.isActive) {
+      return next(
+        new AppError(
+          "Your account has been disabled. Please contact support.",
+          403,
+        ),
+      );
+    }
     return createSendToken(user, 200, res);
   }
 
@@ -411,6 +449,14 @@ export const login = catchAsync(async (req, res, next) => {
       "+password +twoFactorEnabled +twoFactorMethod +twoFactorSecret",
     );
     if (!user) return next(new AppError("User not found", 404));
+    if (!user.isActive) {
+      return next(
+        new AppError(
+          "Your account has been disabled. Please contact support.",
+          403,
+        ),
+      );
+    }
 
     const isMatch = await user.correctPassword(password, user.password);
     if (!isMatch) return next(new AppError("Invalid email or password", 401));
@@ -458,6 +504,11 @@ export const verifyTwoFactor = catchAsync(async (req, res, next) => {
     "+twoFactorEnabled +twoFactorMethod +twoFactorSecret +twoFactorTempToken +twoFactorTempExpires",
   );
   if (!user) return next(new AppError("User not found", 404));
+  if (!user.isActive) {
+    return next(
+      new AppError("Your account has been disabled. Please contact support.", 403),
+    );
+  }
 
   if (!user.twoFactorEnabled)
     return next(new AppError("2FA not enabled for this user", 400));

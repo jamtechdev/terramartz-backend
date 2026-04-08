@@ -33,7 +33,12 @@ export const getAllUsers = catchAsync(async (req, res) => {
   // ======================
   // STATUS FILTER
   // ======================
-  if (status) {
+  if (status === "active") {
+    match.isActive = true;
+  } else if (status === "inactive") {
+    match.isActive = false;
+  } else if (status) {
+    // Backward compatibility for older clients that still send online/offline.
     match.status = status;
   }
 
@@ -491,16 +496,18 @@ export const toggleIsActive = catchAsync(async (req, res, next) => {
   if (!user) {
     return next(new AppError("User not found", 404));
   }
-  const updatedUser = await User.findByIdAndUpdate(id, {
-    isActive: !user.isActive,
-  });
-
-  user.password = undefined;
+  const updatedUser = await User.findByIdAndUpdate(
+    id,
+    {
+      isActive: !user.isActive,
+    },
+    { new: true },
+  ).select("isActive email role");
 
   res.status(200).json({
     status: "success",
     data: {
-      user,
+      user: updatedUser,
     },
   });
 });

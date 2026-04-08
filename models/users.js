@@ -240,6 +240,15 @@ const userSchema = new mongoose.Schema(
       enum: ["online", "offline"],
     },
 
+    emailVerified: {
+      type: Boolean,
+      default: false,
+    },
+    phoneVerified: {
+      type: Boolean,
+      default: false,
+    },
+
     isAccountVerified: {
       type: Boolean,
       default: false,

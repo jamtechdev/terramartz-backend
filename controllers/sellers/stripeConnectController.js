@@ -5,9 +5,47 @@ import AppError from "../../utils/apperror.js";
 
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
+/** Stripe "restricted" for UX: disabled account or overdue requirements — not mere currently_due. */
+function computeIsRestricted(account) {
+  if (account.requirements?.disabled_reason) return true;
+  if (
+    account.details_submitted &&
+    Array.isArray(account.requirements?.past_due) &&
+    account.requirements.past_due.length > 0
+  ) {
+    return true;
+  }
+  return false;
+}
+
+async function sendRemediationEmail(email, firstName, remediationUrl) {
+  if (!email || !remediationUrl) return;
+  const token = process.env.MAILTRAP_API_TOKEN?.trim();
+  if (!token) {
+    console.warn(
+      "[Stripe remediation] MAILTRAP_API_TOKEN not set; skipping remediation email",
+    );
+    return;
+  }
+  const nodemailer = (await import("nodemailer")).default;
+  const { MailtrapTransport } = await import("mailtrap");
+  const transport = nodemailer.createTransport(MailtrapTransport({ token }));
+  const name = firstName || "Seller";
+  await transport.sendMail({
+    from: { address: "hello@demomailtrap.co", name: "Terramartz" },
+    to: email,
+    subject: "Action required: complete your Stripe account",
+    text: `Hi ${name},\n\nStripe needs more information before you can receive payouts. Open this link to continue:\n${remediationUrl}\n`,
+    html: `<p>Hi ${name},</p><p>Stripe needs more information before you can receive payouts.</p><p><a href="${remediationUrl}">Complete verification</a></p>`,
+  });
+}
+
 // Add this function to check KYC status before allowing Stripe operations
 export const checkKYCStatus = catchAsync(async (req, res, next) => {
   const seller = await User.findById(req.user._id || req.user.id);
+  if (!seller) {
+    return next(new AppError("Seller not found", 404));
+  }
 
   if (seller.sellerProfile?.kycStatus !== "approved") {
     return next(
@@ -200,7 +238,6 @@ export const getOnboardingLink = catchAsync(async (req, res, next) => {
       process.env.NEXT_PUBLIC_FRONTEND_URL ||
       "http://localhost:3000";
 
-    // Create account link for onboarding
     const accountLink = await stripe.accountLinks.create({
       account: accountId,
       refresh_url: `${frontendUrl}/vendor/dashboard?stripe_refresh=true`,
@@ -246,12 +283,7 @@ export const getAccountStatus = catchAsync(async (req, res, next) => {
   try {
     const account = await stripe.accounts.retrieve(accountId);
 
-    // ✅ Same logic as updateAccountStatus — restricted check FIRST
-    const isRestricted =
-      account.details_submitted &&
-      (account.requirements?.disabled_reason ||
-        account.requirements?.past_due?.length > 0 ||
-        account.requirements?.currently_due?.length > 0);
+    const isRestricted = computeIsRestricted(account);
 
     let stripeStatus;
     if (isRestricted) {
@@ -264,22 +296,28 @@ export const getAccountStatus = catchAsync(async (req, res, next) => {
       stripeStatus = "pending";
     }
 
-    // Update DB if status changed
-    if (seller.sellerProfile.stripeAccountStatus !== stripeStatus) {
+    const onboardingComplete = Boolean(account.details_submitted);
+    const previousStatus = seller.sellerProfile.stripeAccountStatus;
+    const previousOnboarding = seller.sellerProfile.stripeOnboardingComplete;
+
+    const needsSave =
+      previousStatus !== stripeStatus ||
+      previousOnboarding !== onboardingComplete;
+
+    if (needsSave) {
       seller.sellerProfile.stripeAccountStatus = stripeStatus;
-      seller.sellerProfile.stripeOnboardingComplete =
-        account.details_submitted || false;
+      seller.sellerProfile.stripeOnboardingComplete = onboardingComplete;
       await seller.save();
 
-      // ✅ Also trigger remediation link if newly restricted
-      if (stripeStatus === "restricted") {
-        const { updateAccountStatus } =
-          await import("./stripeConnectController.js");
-        // Re-use the notification/email logic by calling updateAccountStatus
-        // But status is already saved so just send the link directly
+      if (
+        stripeStatus === "restricted" &&
+        previousStatus !== "restricted"
+      ) {
         try {
           const frontendUrl =
-            process.env.FRONTEND_URL || "http://localhost:3000";
+            process.env.FRONTEND_URL ||
+            process.env.NEXT_PUBLIC_FRONTEND_URL ||
+            "http://localhost:3000";
           const accountLink = await stripe.accountLinks.create({
             account: accountId,
             refresh_url: `${frontendUrl}/vendor/dashboard?stripe_refresh=true`,
@@ -377,13 +415,7 @@ export const updateAccountStatus = async (accountId, accountData) => {
 
     const previousStatus = seller.sellerProfile.stripeAccountStatus;
 
-    // ✅ Check restricted FIRST — before checking active/submitted
-    // An account can have charges_enabled:true but still be restricted on payouts
-    const isRestricted =
-      accountData.details_submitted &&
-      (accountData.requirements?.disabled_reason ||
-        accountData.requirements?.past_due?.length > 0 ||
-        accountData.requirements?.currently_due?.length > 0);
+    const isRestricted = computeIsRestricted(accountData);
 
     let status;
 
@@ -432,7 +464,10 @@ export const updateAccountStatus = async (accountId, accountData) => {
 // Helper: Generate remediation link and notify seller
 const sendRemediationLinkToSeller = async (seller, accountId) => {
   try {
-    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+    const frontendUrl =
+      process.env.FRONTEND_URL ||
+      process.env.NEXT_PUBLIC_FRONTEND_URL ||
+      "http://localhost:3000";
 
     // Generate account update link (this IS the remediation link)
     const accountLink = await stripe.accountLinks.create({
@@ -502,6 +537,10 @@ const notifySellerAccountActive = async (seller) => {
 };
 
 export const getRemediationLink = catchAsync(async (req, res, next) => {
+  if (req.user.role !== "seller") {
+    return next(new AppError("Only sellers can access remediation", 403));
+  }
+
   const seller = await User.findById(req.user._id || req.user.id);
 
   if (!seller?.sellerProfile?.stripeAccountId) {
@@ -512,7 +551,10 @@ export const getRemediationLink = catchAsync(async (req, res, next) => {
     return next(new AppError("Account is not restricted", 400));
   }
 
-  const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+  const frontendUrl =
+    process.env.FRONTEND_URL ||
+    process.env.NEXT_PUBLIC_FRONTEND_URL ||
+    "http://localhost:3000";
 
   // Always generate a fresh link (they expire, so don't rely on the saved one)
   const accountLink = await stripe.accountLinks.create({
