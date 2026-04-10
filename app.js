@@ -65,6 +65,7 @@ import adminSellerOrdersRoutes from "./routes/admin/adminSellerOrdersRoutes.js";
 import blogPublicRoutes from "./routes/common/blogPublicRoutes.js";
 import chatRoutes from "./routes/common/chatRoutes.js";
 import adminNotificationRoutes from "./routes/admin/adminNotificationRoutes.js";
+import adminSettingsRoutes from "./routes/admin/adminSettingsRoutes.js";
 
 // =====================
 // __dirname setup
@@ -191,6 +192,7 @@ app.use("/api/admin/dashboard", adminDashboardRoute);
 app.use("/api/admin/logs", adminLogsRoutes);
 app.use("/api/admin/seller-orders", adminSellerOrdersRoutes);
 app.use("/api/admin/notifications", adminNotificationRoutes);
+app.use("/api/admin/settings", adminSettingsRoutes);
 
 // Blog Routes
 app.use("/api/admin/blog-categories", adminBlogCategoryRoutes);

@@ -28,6 +28,8 @@ export function initializeSocket(httpServer) {
           "http://localhost:3001",
           "http://127.0.0.1:3000",
           "http://admin.35.168.8.254.nip.io",
+          "https://terramartz.com",
+          "https://admin.terramartz.com",
         ];
         if (allowedOrigins.includes(origin)) {
           callback(null, true);
@@ -94,13 +96,22 @@ export function initializeSocket(httpServer) {
 
     socket.on("message:send", async (data, callback) => {
       try {
-        const { conversationId, content, messageType = "text", attachmentUrl } = data;
+        const {
+          conversationId,
+          content,
+          messageType = "text",
+          attachmentUrl,
+        } = data;
 
         if (!conversationId || !content) {
-          return callback?.({ error: "conversationId and content are required" });
+          return callback?.({
+            error: "conversationId and content are required",
+          });
         }
 
-        const conversation = await Conversation.findOne({ _id: conversationId });
+        const conversation = await Conversation.findOne({
+          _id: conversationId,
+        });
         if (!conversation) {
           return callback?.({ error: "Conversation not found" });
         }
@@ -110,7 +121,9 @@ export function initializeSocket(httpServer) {
           (p) => String(p.userId).trim() === senderId,
         );
         if (!isParticipant) {
-          return callback?.({ error: "You are not a participant of this conversation" });
+          return callback?.({
+            error: "You are not a participant of this conversation",
+          });
         }
 
         const message = await Message.create({
@@ -133,7 +146,10 @@ export function initializeSocket(httpServer) {
         const currentId = String(_id).trim();
         conversation.participants.forEach((p) => {
           if (String(p.userId).trim() !== currentId) {
-            io.to(getUserRoom(p.userId)).emit("message:receive", populatedMessage);
+            io.to(getUserRoom(p.userId)).emit(
+              "message:receive",
+              populatedMessage,
+            );
           }
         });
 
@@ -158,7 +174,9 @@ export function initializeSocket(httpServer) {
           },
         );
 
-        const conversation = await Conversation.findOne({ _id: conversationId });
+        const conversation = await Conversation.findOne({
+          _id: conversationId,
+        });
         if (conversation) {
           const currentId = String(_id).trim();
           const participant = conversation.participants.find(
