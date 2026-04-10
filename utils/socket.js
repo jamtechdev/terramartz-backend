@@ -29,6 +29,7 @@ export function initializeSocket(httpServer) {
           "http://127.0.0.1:3000",
           "http://admin.35.168.8.254.nip.io",
           "https://terramartz.com",
+          "https://www.terramartz.com",
           "https://admin.terramartz.com",
         ];
         if (allowedOrigins.includes(origin)) {
