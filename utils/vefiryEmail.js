@@ -20,14 +20,17 @@ export default class Email {
 
   // Send the actual email start
   async send(template, subject) {
+    const frontEndUrl =
+      this.baseUrl && this.url && process.env.WEBSITE_RESET_PASSWORD_URL
+        ? `${this.baseUrl}/${process.env.WEBSITE_RESET_PASSWORD_URL}?token=${String(
+            this.url,
+          ).substring(String(this.url).lastIndexOf("/") + 1)}`
+        : "";
+
     // 1) Render HTML based on a pug template
     const html = pug.renderFile(`${__dirname}/../views/email/${template}.pug`, {
       firstName: this.firstName ? this.firstName : "",
-      front_end_url: this.baseUrl
-        ? `${this.baseUrl}/${
-            process.env.WEBSITE_RESET_PASSWORD_URL
-          }?token=${this.url.substring(this.url.lastIndexOf("/") + 1)}`
-        : "",
+      front_end_url: frontEndUrl,
       subject,
       url: this.url || "",
       otp: this.emailOtp,
