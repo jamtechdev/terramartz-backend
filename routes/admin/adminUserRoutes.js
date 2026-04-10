@@ -36,6 +36,13 @@ router.patch(
   adminUserController.updateUserDetails,
 );
 
+// GRANT loyalty points to user
+router.post(
+  "/:id/loyalty-points",
+  protectAdmin("Users", "Full"),
+  adminUserController.grantUserLoyaltyPoints,
+);
+
 // // DELETE user (soft delete)
 // router.delete(
 //   "/:id",

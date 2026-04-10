@@ -194,7 +194,26 @@ export const getUserById = catchAsync(async (req, res, next) => {
   if (user.role === "user") {
     const loyaltyResult = await LoyaltyPoint.aggregate([
       { $match: { user: id } },
-      { $group: { _id: null, totalPoints: { $sum: "$points" } } },
+      {
+        $group: {
+          _id: null,
+          earnedPoints: {
+            $sum: {
+              $cond: [{ $eq: ["$type", "earn"] }, { $abs: "$points" }, 0],
+            },
+          },
+          redeemedPoints: {
+            $sum: {
+              $cond: [{ $eq: ["$type", "redeem"] }, { $abs: "$points" }, 0],
+            },
+          },
+        },
+      },
+      {
+        $project: {
+          totalPoints: { $subtract: ["$earnedPoints", "$redeemedPoints"] },
+        },
+      },
     ]);
     if (loyaltyResult && loyaltyResult.length > 0) {
       loyaltyPoints = loyaltyResult[0].totalPoints;
@@ -238,6 +257,85 @@ export const getUserById = catchAsync(async (req, res, next) => {
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
       loyaltyPoints: user.role === "user" ? loyaltyPoints : undefined,
+    },
+  });
+});
+
+// ==========================
+// GRANT LOYALTY POINTS (ADMIN)
+// ==========================
+export const grantUserLoyaltyPoints = catchAsync(async (req, res, next) => {
+  const { id } = req.params;
+  const { points, reason } = req.body;
+
+  const numericPoints = Number(points);
+  if (!Number.isInteger(numericPoints) || numericPoints <= 0) {
+    return next(new AppError("Points must be a positive whole number", 400));
+  }
+
+  if (numericPoints > 100000) {
+    return next(new AppError("Points exceed max allowed per grant", 400));
+  }
+
+  const user = await User.findById(id).select("_id role email");
+  if (!user) {
+    return next(new AppError("User not found", 404));
+  }
+
+  if (user.role !== "user") {
+    return next(
+      new AppError("Loyalty points can only be granted to buyer accounts", 400),
+    );
+  }
+
+  const adminId = String(req.user?._id || "admin");
+  const cleanReason =
+    typeof reason === "string" && reason.trim().length > 0
+      ? reason.trim().slice(0, 200)
+      : "admin_grant";
+
+  await LoyaltyPoint.create({
+    user: String(user._id),
+    points: numericPoints,
+    type: "earn",
+    reason: cleanReason,
+    referenceId: `admin-grant:${adminId}:${Date.now()}`,
+  });
+
+  const balanceResult = await LoyaltyPoint.aggregate([
+    { $match: { user: String(user._id) } },
+    {
+      $group: {
+        _id: null,
+        earnedPoints: {
+          $sum: {
+            $cond: [{ $eq: ["$type", "earn"] }, { $abs: "$points" }, 0],
+          },
+        },
+        redeemedPoints: {
+          $sum: {
+            $cond: [{ $eq: ["$type", "redeem"] }, { $abs: "$points" }, 0],
+          },
+        },
+      },
+    },
+    {
+      $project: {
+        balance: { $subtract: ["$earnedPoints", "$redeemedPoints"] },
+      },
+    },
+  ]);
+
+  const newBalance = Number(balanceResult?.[0]?.balance || 0);
+
+  res.status(200).json({
+    status: "success",
+    message: `${numericPoints} loyalty points granted to ${user.email}`,
+    data: {
+      userId: String(user._id),
+      grantedPoints: numericPoints,
+      newBalance,
+      reason: cleanReason,
     },
   });
 });

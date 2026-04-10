@@ -683,16 +683,20 @@ export const getAllProductWithPerformance = catchAsync(
       console.log("🔍 Filtering by categoryId:", req.query.categoryId);
     }
 
-    // 🔹 Get total count BEFORE creating the query chain
     const total = await Product.countDocuments(baseQuery);
+    const page = req.query.page * 1 || 1;
+    let limit = req.query.limit * 1 || 100;
+    if (limit <= 0) limit = 100;
+    const skip = (page - 1) * limit;
+    const sortBy = String(req.query.sortBy || "name");
 
-    // 🔹 Now create a fresh query for fetching products
-    let query = Product.find(baseQuery);
+    const dbSortMap = {
+      name: { title: 1 },
+      "price-low": { price: 1 },
+      "price-high": { price: -1 },
+    };
 
-    const features = new APIFeatures(query, req.query).paginate();
-
-    // 🔹 Populate category and seller/shop info
-    let products = await features.query
+    const baseProductQuery = Product.find(baseQuery)
       .populate({
         path: "category",
         select:
@@ -703,6 +707,15 @@ export const getAllProductWithPerformance = catchAsync(
         select:
           "firstName middleName lastName profilePicture businessDetails sellerProfile",
       });
+
+    // For rating sort we need performance data to determine the order.
+    let products =
+      sortBy === "rating"
+        ? await baseProductQuery
+        : await baseProductQuery
+            .sort(dbSortMap[sortBy] || { title: 1 })
+            .skip(skip)
+            .limit(limit);
 
     // 🔹 Fetch all performances for these products in ONE query
     const productIds = products.map((p) => p._id);
@@ -717,7 +730,7 @@ export const getAllProductWithPerformance = catchAsync(
     });
 
     // 🔹 Build response with direct S3 URLs
-    const productsWithPerformance = products.map((p) => {
+    let productsWithPerformance = products.map((p) => {
       // 🔹 Direct S3 URLs for product images
       let productImages = (p.productImages || []).map((img) =>
         getDirectUrl(`products/${img}`),
@@ -804,12 +817,20 @@ export const getAllProductWithPerformance = catchAsync(
       };
     });
 
+    // API-level sorting with pagination
+    if (sortBy === "rating") {
+      productsWithPerformance.sort(
+        (a, b) => (b.performance?.rating || 0) - (a.performance?.rating || 0),
+      );
+      productsWithPerformance = productsWithPerformance.slice(skip, skip + limit);
+    }
+
     res.status(200).json({
       status: "success",
-      results: products.length,
+      results: productsWithPerformance.length,
       total: total, // Total count of all products matching the query
-      page: req.query.page * 1 || 1,
-      limit: req.query.limit * 1 || 100,
+      page,
+      limit,
       products: productsWithPerformance,
     });
   },

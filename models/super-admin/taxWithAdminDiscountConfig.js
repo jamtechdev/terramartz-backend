@@ -9,6 +9,7 @@ const taxWithDiscountConfigSchema = new mongoose.Schema(
     },
     rate: { type: Number, required: true, default: 0.0 },
     active: { type: Boolean, default: true },
+    loyaltyPointValue: { type: Number, default: 0.1, min: 0 },
 
     // 🆕 Limited Time Offer
     limitedTimeOffer: {

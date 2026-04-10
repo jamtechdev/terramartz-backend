@@ -4,6 +4,7 @@ import { Review } from "../../models/common/review.js";
 import catchAsync from "../../utils/catchasync.js";
 import AppError from "../../utils/apperror.js";
 import { LoyaltyPoint } from "../../models/customers/loyaltyPoints.js";
+import { User } from "../../models/users.js";
 
 function purchaseBuyerMatch(req) {
   const userId = req.user._id || req.user.id;
@@ -166,6 +167,7 @@ export const getCustomerDashboardStats = catchAsync(async (req, res, next) => {
   // ==================== 1️⃣ TOTAL ORDERS ====================
   const buyerMatch = purchaseBuyerMatch(req);
   const userIdString = String(userId);
+  const userDoc = await User.findById(userId).select("createdAt").lean();
 
   const totalOrders = await Purchase.countDocuments(buyerMatch);
 
@@ -259,7 +261,10 @@ export const getCustomerDashboardStats = catchAsync(async (req, res, next) => {
       loyaltyPoints: {
         total: loyaltyPoints,
         message: `${pointsToNextTier} points to next tier`,
+        pointsToNextTier,
+        nextTierGoal,
       },
+      memberSince: userDoc?.createdAt || null,
     },
   });
 });

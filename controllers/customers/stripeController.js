@@ -151,6 +151,40 @@ export const updatePurchasePaymentStatus = async (purchaseId) => {
   return { paymentStatus, totalRefundAmount };
 };
 
+const getLoyaltyBalance = async (userId, session = null) => {
+  const uid = String(userId || "");
+  if (!uid) return 0;
+
+  const aggregatePipeline = [
+    { $match: { user: uid } },
+    {
+      $group: {
+        _id: null,
+        earnedPoints: {
+          $sum: {
+            $cond: [{ $eq: ["$type", "earn"] }, { $abs: "$points" }, 0],
+          },
+        },
+        redeemedPoints: {
+          $sum: {
+            $cond: [{ $eq: ["$type", "redeem"] }, { $abs: "$points" }, 0],
+          },
+        },
+      },
+    },
+    {
+      $project: {
+        balance: { $subtract: ["$earnedPoints", "$redeemedPoints"] },
+      },
+    },
+  ];
+
+  const query = LoyaltyPoint.aggregate(aggregatePipeline);
+  if (session) query.session(session);
+  const result = await query;
+  return Math.max(0, Number(result?.[0]?.balance || 0));
+};
+
 /**
  * Shared helper to calculate full checkout breakdown from database authoritative data.
  * @param {Array} products - Array of { product: id, quantity }
@@ -305,20 +339,14 @@ export const calculateOrderBreakdown = async (
   // 4.5. Loyalty Points Discount
   let loyaltyDiscount = 0;
   let pointsToUse = 0;
+  const loyaltyPointValue =
+    typeof activeTax?.loyaltyPointValue === "number" &&
+    activeTax.loyaltyPointValue > 0
+      ? activeTax.loyaltyPointValue
+      : 0.1;
   if (useLoyaltyPoints && user && user.id) {
-    // Fetch user's loyalty point balance
     const userIdString = String(user.id || user._id);
-    const loyaltyRecords = await LoyaltyPoint.find({ user: userIdString });
-
-    // Calculate balance: sum earned points, subtract redeemed points
-    const balance = loyaltyRecords.reduce((sum, record) => {
-      if (record.type === "earn") {
-        return sum + Math.abs(record.points);
-      } else if (record.type === "redeem") {
-        return sum - Math.abs(record.points);
-      }
-      return sum;
-    }, 0);
+    const balance = await getLoyaltyBalance(userIdString);
 
     if (balance > 0) {
       // Calculate subtotal after promo and admin discounts
@@ -328,7 +356,7 @@ export const calculateOrderBreakdown = async (
       );
 
       // Loyalty discount can't exceed the remaining amount
-      const maxLoyaltyDiscount = balance * 0.1; // $0.1 per point
+      const maxLoyaltyDiscount = balance * loyaltyPointValue;
       loyaltyDiscount = Math.min(
         maxLoyaltyDiscount,
         subtotalAfterOtherDiscounts,
@@ -336,7 +364,7 @@ export const calculateOrderBreakdown = async (
       loyaltyDiscount = Math.round(loyaltyDiscount * 100) / 100;
 
       // Calculate actual points to use based on capped discount
-      pointsToUse = Math.round(loyaltyDiscount / 0.1);
+      pointsToUse = Math.round(loyaltyDiscount / loyaltyPointValue);
 
       console.log(`💎 Loyalty calculation:`);
       console.log(
@@ -436,6 +464,7 @@ export const calculateOrderBreakdown = async (
     hasStripeConnect,
     platformFeeConfig,
     activeTax,
+    loyaltyPointValue,
   };
 };
 
@@ -903,17 +932,25 @@ export const webhookPayment = async (req, res, next) => {
         );
 
         if (useLoyaltyPoints && loyaltyPointsUsed > 0) {
+          const availableBalance = await getLoyaltyBalance(buyer);
+          const pointsToRedeem = Math.min(loyaltyPointsUsed, availableBalance);
+          if (pointsToRedeem <= 0) {
+            console.log(
+              `⚠️ Loyalty points NOT deducted - no available balance for user ${buyer}`,
+            );
+          } else {
           console.log(`💎 Creating redeem record...`);
           await LoyaltyPoint.create({
             user: buyer,
-            points: Math.abs(loyaltyPointsUsed), // Store as positive number
+            points: Math.abs(pointsToRedeem), // Store as positive number
             type: "redeem",
             reason: "purchase",
             referenceId: orderId,
           });
           console.log(
-            `✅ Deducted ${loyaltyPointsUsed} loyalty points from user ${buyer}`,
+            `✅ Deducted ${pointsToRedeem} loyalty points from user ${buyer}`,
           );
+          }
         } else {
           console.log(`⚠️ Loyalty points NOT deducted - condition not met`);
         }
@@ -1776,17 +1813,25 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
     );
 
     if (useLoyaltyPoints && loyaltyPointsUsed > 0) {
+      const availableBalance = await getLoyaltyBalance(finalBuyerString);
+      const pointsToRedeem = Math.min(loyaltyPointsUsed, availableBalance);
+      if (pointsToRedeem <= 0) {
+        console.log(
+          `⚠️ Loyalty points NOT deducted - no available balance for user ${finalBuyerString}`,
+        );
+      } else {
       console.log(`💎 Creating redeem record...`);
       await LoyaltyPoint.create({
         user: finalBuyerString,
-        points: Math.abs(loyaltyPointsUsed), // Store as positive number
+        points: Math.abs(pointsToRedeem), // Store as positive number
         type: "redeem",
         reason: "purchase",
         referenceId: orderId,
       });
       console.log(
-        `✅ Deducted ${loyaltyPointsUsed} loyalty points from user ${finalBuyerString}`,
+        `✅ Deducted ${pointsToRedeem} loyalty points from user ${finalBuyerString}`,
       );
+      }
     } else {
       console.log(`⚠️ Loyalty points NOT deducted - condition not met`);
     }
@@ -2157,12 +2202,19 @@ const createPurchaseFromPaymentIntent = async (paymentIntent) => {
         );
 
         if (useLoyaltyPoints && loyaltyPointsUsed > 0) {
+          const availableBalance = await getLoyaltyBalance(buyer, session);
+          const pointsToRedeem = Math.min(loyaltyPointsUsed, availableBalance);
+          if (pointsToRedeem <= 0) {
+            console.log(
+              `⚠️ Loyalty points NOT deducted - no available balance for user ${buyer}`,
+            );
+          } else {
           console.log(`💎 Creating redeem record...`);
           await LoyaltyPoint.create(
             [
               {
                 user: buyer,
-                points: Math.abs(loyaltyPointsUsed), // Store as positive number
+                points: Math.abs(pointsToRedeem), // Store as positive number
                 type: "redeem",
                 reason: "purchase",
                 referenceId: orderId,
@@ -2171,8 +2223,9 @@ const createPurchaseFromPaymentIntent = async (paymentIntent) => {
             { session },
           );
           console.log(
-            `✅ Deducted ${loyaltyPointsUsed} loyalty points from user ${buyer}`,
+            `✅ Deducted ${pointsToRedeem} loyalty points from user ${buyer}`,
           );
+          }
         } else {
           console.log(`⚠️ Loyalty points NOT deducted - condition not met`);
         }
