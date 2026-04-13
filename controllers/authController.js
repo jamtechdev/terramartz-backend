@@ -40,7 +40,29 @@ const createSendToken = (user, statusCode, res) => {
     },
   });
 };
+
+/** Align with storefront password rules: length + letter + digit */
+const assertSignupPasswordStrength = (password) => {
+  if (password === undefined || password === null || password === "") {
+    throw new AppError("Password is required", 400);
+  }
+  if (typeof password !== "string") {
+    throw new AppError("Password is invalid", 400);
+  }
+  if (password.length < 8) {
+    throw new AppError("Password must be at least 8 characters", 400);
+  }
+  if (!/[a-zA-Z]/.test(password)) {
+    throw new AppError("Password must include at least one letter", 400);
+  }
+  if (!/[0-9]/.test(password)) {
+    throw new AppError("Password must include at least one number", 400);
+  }
+};
+
 export const signup = catchAsync(async (req, res, next) => {
+  assertSignupPasswordStrength(req.body.password);
+
   // 🔹 Start a MongoDB session
   const session = await mongoose.startSession();
   session.startTransaction();

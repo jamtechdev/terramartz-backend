@@ -4,12 +4,39 @@ import { User } from "../models/users.js";
 import AppError from "../utils/apperror.js";
 import Email from "../utils/vefiryEmail.js";
 
+/** Skip sending another email if the same address requested OTP within this window (duplicate client calls, etc.). Explicit resend sets body.resend=true. */
+const SEND_EMAIL_OTP_COOLDOWN_MS = 90_000;
+
 export const sendEmailVerificationOtp = async (req, res, next) => {
   try {
-    const { email } = req.body;
+    const { email, resend, forceResend } = req.body;
 
-    // delete previous document
-    await Verify.deleteOne({ email });
+    if (!email || typeof email !== "string") {
+      return next(new AppError("Email is required", 400));
+    }
+
+    const normalized = String(email).toLowerCase().trim();
+    const allowResend = resend === true || forceResend === true;
+
+    if (!allowResend) {
+      const existing = await Verify.findOne({ email: normalized });
+      if (existing?.createdAt) {
+        const age = Date.now() - new Date(existing.createdAt).getTime();
+        if (age >= 0 && age < SEND_EMAIL_OTP_COOLDOWN_MS) {
+          return res.status(200).json({
+            status: "Success",
+            message: "OTP already sent recently",
+            deduped: true,
+            ...(process.env.NODE_ENV === "development" && {
+              emailOtp: existing.emailOtp,
+              expiresAt: new Date(existing.emailOtpExpiresAt).toISOString(),
+            }),
+          });
+        }
+      }
+    }
+
+    await Verify.deleteOne({ email: normalized });
     // create 6 digit otp
     const otp = crypto.randomInt(100000, 1000000).toString();
     // The validity of the OTP is 5 minutes.
@@ -17,7 +44,7 @@ export const sendEmailVerificationOtp = async (req, res, next) => {
 
     // Create document
     const verifyDocs = await Verify.create({
-      email: email,
+      email: normalized,
       emailOtp: otp,
       emailOtpExpiresAt: otpExpiry,
     });
@@ -53,7 +80,8 @@ export const verifyEmail = async (req, res, next) => {
   }
 
   try {
-    const verifyDocs = await Verify.findOne({ email: email });
+    const normalizedEmail = String(email).toLowerCase().trim();
+    const verifyDocs = await Verify.findOne({ email: normalizedEmail });
 
     if (!verifyDocs)
       return res
@@ -96,9 +124,8 @@ export const verifyEmail = async (req, res, next) => {
     // delete document
     await Verify.findByIdAndDelete(verifyDocs._id);
 
-    const normalized = String(email).toLowerCase().trim();
     await User.updateOne(
-      { email: normalized },
+      { email: normalizedEmail },
       {
         $set: {
           emailVerified: true,
