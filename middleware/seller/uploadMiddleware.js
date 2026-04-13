@@ -7,9 +7,31 @@ const fileFilter = (req, file, cb) => {
   else cb(new Error("Only image files are allowed!"), false);
 };
 
+const kycAllowedMimeTypes = new Set([
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+]);
+const kycFileFilter = (req, file, cb) => {
+  const isImage = file.mimetype.startsWith("image/");
+  const isAllowedDoc = kycAllowedMimeTypes.has(file.mimetype);
+  if (isImage || isAllowedDoc) cb(null, true);
+  else
+    cb(
+      new Error("Only image, PDF, DOC, and DOCX files are allowed!"),
+      false,
+    );
+};
+
 export const upload = multer({
   storage,
   fileFilter,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
+});
+
+export const uploadKYC = multer({
+  storage,
+  fileFilter: kycFileFilter,
   limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
 });
 
