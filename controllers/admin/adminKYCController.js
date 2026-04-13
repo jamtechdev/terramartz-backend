@@ -4,28 +4,67 @@ import { getDirectUrl } from '../../utils/awsS3.js';
 import catchAsync from '../../utils/catchasync.js';
 import AppError from '../../utils/apperror.js';
 
-// Get all pending KYC applications
+// List KYC applications (optional status filter; no status = all)
 export const getPendingKYCApplications = catchAsync(async (req, res, next) => {
-  const { status, page = 1, limit = 10 } = req.query;
-  
-  let filter = { status: status || 'submitted' };
-  
+  const { status, page = 1, limit = 10, search } = req.query;
+
+  const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 10));
+
+  const allowedStatuses = ['pending', 'submitted', 'under_review', 'approved', 'rejected'];
+  const rawStatus = typeof status === 'string' ? status.trim().toLowerCase() : '';
+  const filter = {};
+  if (rawStatus && rawStatus !== 'all' && allowedStatuses.includes(rawStatus)) {
+    filter.status = rawStatus;
+  }
+
+  if (search && String(search).trim()) {
+    const term = String(search).trim();
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(escaped, 'i');
+    const matchingSellers = await User.find({
+      $or: [
+        { email: regex },
+        { firstName: regex },
+        { lastName: regex },
+        { 'businessDetails.businessName': regex },
+      ],
+    })
+      .select('_id')
+      .lean();
+    const sellerIds = matchingSellers.map((u) => u._id);
+    if (sellerIds.length === 0) {
+      return res.status(200).json({
+        status: 'success',
+        results: 0,
+        total: 0,
+        page: pageNum,
+        pages: 0,
+        limit: limitNum,
+        data: {
+          applications: [],
+        },
+      });
+    }
+    filter.sellerId = { $in: sellerIds };
+  }
+
   const kycApplications = await KYC.find(filter)
     .populate('sellerId', 'firstName lastName email businessDetails')
     .populate('reviewedBy', 'firstName lastName email')
     .sort({ createdAt: -1 })
-    .skip((page - 1) * limit)
-    .limit(parseInt(limit));
+    .skip((pageNum - 1) * limitNum)
+    .limit(limitNum);
 
   // Format documents with direct URLs
-  const formattedApplications = kycApplications.map(app => {
+  const formattedApplications = kycApplications.map((app) => {
     const appObject = app.toObject();
     return {
       ...appObject,
-      documents: appObject.documents.map(doc => ({
+      documents: appObject.documents.map((doc) => ({
         ...doc,
-        documentUrl: getDirectUrl(doc.documentUrl)
-      }))
+        documentUrl: getDirectUrl(doc.documentUrl),
+      })),
     };
   });
 
@@ -35,11 +74,12 @@ export const getPendingKYCApplications = catchAsync(async (req, res, next) => {
     status: 'success',
     results: formattedApplications.length,
     total,
-    page: parseInt(page),
-    pages: Math.ceil(total / limit),
+    page: pageNum,
+    pages: Math.ceil(total / limitNum) || 0,
+    limit: limitNum,
     data: {
-      applications: formattedApplications
-    }
+      applications: formattedApplications,
+    },
   });
 });
 
