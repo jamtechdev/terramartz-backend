@@ -1,7 +1,6 @@
 import mongoose from "mongoose";
 
 import { Purchase } from "../../models/customers/purchase.js";
-import { ProductPerformance } from "../../models/seller/productPerformance.js";
 import { Review } from "../../models/common/review.js";
 import { Product } from "../../models/seller/product.js";
 import { getPresignedUrl } from "../../utils/awsS3.js";
@@ -14,6 +13,12 @@ const safeObjectId = (id) => {
   if (mongoose.Types.ObjectId.isValid(id))
     return new mongoose.Types.ObjectId(id);
   return id;
+};
+
+const BEST_SELLERS_CACHE_TTL_MS = 5 * 60 * 1000;
+let bestSellersCache = {
+  expiresAt: 0,
+  payload: null,
 };
 
 // ✅ Get Seller Performance Stats
@@ -537,295 +542,270 @@ export const getSellerDashboardAnalytics = catchAsync(async (req, res) => {
 });
 
 export const getBestSellers = catchAsync(async (req, res, next) => {
-  // 🔹 First, get actual sales count from Purchase collection (last 8 days)
-  // This ensures we show products that actually have orders
-  const eightDaysAgo = new Date();
+  if (
+    bestSellersCache.payload &&
+    bestSellersCache.expiresAt > Date.now()
+  ) {
+    return res.status(200).json(bestSellersCache.payload);
+  }
+
+  const now = new Date();
+  const eightDaysAgo = new Date(now);
   eightDaysAgo.setDate(eightDaysAgo.getDate() - 8);
   eightDaysAgo.setHours(0, 0, 0, 0);
 
-  // console.log("\n========== BEST SELLERS - CALCULATING ==========");
-  // console.log("📦 Date range: Last 8 days from", eightDaysAgo.toISOString());
+  const thirtyDaysAgo = new Date(now);
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  thirtyDaysAgo.setHours(0, 0, 0, 0);
 
-  // Get products with actual sales from Purchase collection (last 8 days)
-  const actualSalesData = await Purchase.aggregate([
+  const MIN_UNITS_LAST_8_DAYS = 2;
+  const MAX_RESULTS = 12;
+  const SCORE_WEIGHTS = {
+    sales8d: 4.0,
+    sales30d: 1.5,
+    rating: 20,
+    conversion: 15,
+  };
+
+  // Use paid + delivered signals to reduce noisy ranking spikes.
+  const salesWindowData = await Purchase.aggregate([
     { $unwind: "$products" },
     {
       $match: {
-        createdAt: { $gte: eightDaysAgo },
-        paymentStatus: { $in: ["paid", "pending"] }, // Count all paid/pending orders
+        createdAt: { $gte: thirtyDaysAgo },
+        paymentStatus: "paid",
+        "products.status": { $in: ["delivered", "shipped", "in_transit"] },
       },
     },
     {
       $group: {
-        _id: "$products.product", // Product ID (String UUID)
-        soldCount: { $sum: "$products.quantity" },
-        orderCount: { $sum: 1 },
+        _id: "$products.product",
+        sold30d: { $sum: "$products.quantity" },
+        sold8d: {
+          $sum: {
+            $cond: [{ $gte: ["$createdAt", eightDaysAgo] }, "$products.quantity", 0],
+          },
+        },
+        orders30d: { $sum: 1 },
+        orders8d: {
+          $sum: {
+            $cond: [{ $gte: ["$createdAt", eightDaysAgo] }, 1, 0],
+          },
+        },
       },
     },
-    { $sort: { soldCount: -1 } },
-    { $limit: 10 }, // Get top 10 by actual sales
+    { $sort: { sold8d: -1, sold30d: -1 } },
+    { $limit: 150 },
   ]);
 
-  // console.log("📦 Actual sales from Purchase (last 8 days):", JSON.stringify(actualSalesData, null, 2));
-
-  // Create a map for quick lookup of sales count
-  const salesCountMap = {};
-  actualSalesData.forEach((item) => {
-    salesCountMap[String(item._id)] = item.soldCount || 0;
+  const salesByProduct = {};
+  salesWindowData.forEach((item) => {
+    salesByProduct[String(item._id)] = {
+      sold8d: item.sold8d || 0,
+      sold30d: item.sold30d || 0,
+      orders8d: item.orders8d || 0,
+      orders30d: item.orders30d || 0,
+    };
   });
 
-  // Get product IDs that have actual sales
-  const productIdsWithSales = actualSalesData.map((item) => String(item._id));
-  // console.log("📦 Product IDs with sales:", productIdsWithSales);
+  const productIds = Object.keys(salesByProduct);
+  if (productIds.length === 0) {
+    const payload = {
+      status: "success",
+      results: 0,
+      data: [],
+      rankingMeta: {
+        source: "sales_8d",
+        windowDays: 8,
+        reason: "No paid sales found in the last 30 days.",
+      },
+    };
+    bestSellersCache = {
+      expiresAt: Date.now() + BEST_SELLERS_CACHE_TTL_MS,
+      payload,
+    };
+    return res.status(200).json(payload);
+  }
 
-  let topProducts;
-  
-  if (productIdsWithSales.length > 0) {
-    // 🔹 START FROM PRODUCT COLLECTION (not ProductPerformance)
-    // Get products that have actual sales directly from Product collection
-    // Note: Product._id is String (UUID), so we match as strings
-    topProducts = await Product.aggregate([
-      {
-        $match: {
-          _id: { $in: productIdsWithSales },
-          status: "active",
-        },
+  let products = await Product.aggregate([
+    {
+      $match: {
+        _id: { $in: productIds },
+        status: "active",
+        adminApproved: true,
+        stockQuantity: { $gt: 0 },
       },
-      // 1️⃣ Join ProductPerformance for additional metrics
-      {
-        $lookup: {
-          from: "productperformances",
-          localField: "_id",
-          foreignField: "product",
-          as: "performance",
-        },
+    },
+    {
+      $lookup: {
+        from: "productperformances",
+        localField: "_id",
+        foreignField: "product",
+        as: "performance",
       },
-      { $unwind: { path: "$performance", preserveNullAndEmptyArrays: true } },
+    },
+    { $unwind: { path: "$performance", preserveNullAndEmptyArrays: true } },
+    {
+      $lookup: {
+        from: "categories",
+        localField: "category",
+        foreignField: "_id",
+        as: "categoryDetails",
+      },
+    },
+    { $unwind: { path: "$categoryDetails", preserveNullAndEmptyArrays: true } },
+    {
+      $lookup: {
+        from: "users",
+        localField: "createdBy",
+        foreignField: "_id",
+        as: "seller",
+      },
+    },
+    { $unwind: { path: "$seller", preserveNullAndEmptyArrays: true } },
+    {
+      $project: {
+        _id: 1,
+        title: 1,
+        slug: 1,
+        description: 1,
+        price: 1,
+        originalPrice: 1,
+        category: "$categoryDetails",
+        stockQuantity: 1,
+        productImages: 1,
+        tags: 1,
+        organic: 1,
+        featured: 1,
+        productType: 1,
+        status: 1,
+        createdBy: 1,
+        discount: 1,
+        discountType: 1,
+        discountExpires: 1,
+        adminApproved: 1,
+        createdAt: 1,
+        totalSales: "$performance.totalSales",
+        totalQuantitySold: "$performance.totalQuantitySold",
+        views: "$performance.views",
+        rating: "$performance.rating",
+        currentStock: "$performance.currentStock",
+        shopSlug: "$seller.sellerProfile.shopSlug",
+        shopPicture: "$seller.sellerProfile.shopPicture",
+      },
+    },
+  ]);
 
-      // // 2️⃣ Join category info from Category collection
-      {
-        $lookup: {
-          from: "categories",
-          localField: "category",
-          foreignField: "_id",
-          as: "categoryDetails",
-        },
-      },
-      { $unwind: { path: "$categoryDetails", preserveNullAndEmptyArrays: true } },
+  products = products
+    .map((p) => {
+      const sales = salesByProduct[String(p._id)] || {
+        sold8d: 0,
+        sold30d: 0,
+        orders8d: 0,
+        orders30d: 0,
+      };
+      const rating = Number(p.rating || 0);
+      const views = Number(p.views || 0);
+      const totalSold = Number(p.totalQuantitySold || 0);
+      const conversion = views > 0 ? Math.min(1, totalSold / views) : 0;
+      const ratingNorm = Math.max(0, Math.min(1, rating / 5));
 
-      // 3️⃣ Join seller info from User collection
-      {
-        $lookup: {
-          from: "users",
-          localField: "createdBy",
-          foreignField: "_id",
-          as: "seller",
-        },
-      },
-      { $unwind: { path: "$seller", preserveNullAndEmptyArrays: true } },
+      const scoreBreakdown = {
+        sales8dComponent: sales.sold8d * SCORE_WEIGHTS.sales8d,
+        sales30dComponent: sales.sold30d * SCORE_WEIGHTS.sales30d,
+        ratingComponent: ratingNorm * SCORE_WEIGHTS.rating,
+        conversionComponent: conversion * SCORE_WEIGHTS.conversion,
+      };
 
-      // 4️⃣ Project required fields
-      {
-        $project: {
-          _id: 1,
-          title: 1,
-          slug: 1,
-          description: 1,
-          price: 1,
-          originalPrice: 1,
-          category: "$categoryDetails",
-          stockQuantity: 1,
-          productImages: 1,
-          tags: 1,
-          organic: 1,
-          featured: 1,
-          productType: 1,
-          status: 1,
-          createdBy: 1,
-          discount: 1,
-          discountType: 1,
-          discountExpires: 1,
-          createdAt: 1,
-          // From ProductPerformance
-          totalSales: "$performance.totalSales",
-          totalQuantitySold: "$performance.totalQuantitySold",
-          views: "$performance.views",
-          rating: "$performance.rating",
-          currentStock: "$performance.currentStock",
-          // From seller
-          shopSlug: "$seller.sellerProfile.shopSlug",
-          shopPicture: "$seller.sellerProfile.shopPicture",
-        },
-      },
-    ]);
-    
-    // Add soldLast8Days to each product from salesCountMap
-    topProducts = topProducts.map((p) => {
-      const productIdStr = String(p._id);
+      const score =
+        scoreBreakdown.sales8dComponent +
+        scoreBreakdown.sales30dComponent +
+        scoreBreakdown.ratingComponent +
+        scoreBreakdown.conversionComponent;
+
       return {
         ...p,
-        soldLast8Days: salesCountMap[productIdStr] || 0,
+        soldLast8Days: sales.sold8d,
+        soldLast30Days: sales.sold30d,
+        orderCountLast8Days: sales.orders8d,
+        orderCountLast30Days: sales.orders30d,
+        rankingReason: "Ranked by weighted score from paid sales, rating, and conversion.",
+        scoreBreakdown,
+        rankingScore: Number(score.toFixed(4)),
       };
-    });
-    
-    // Re-sort by actual sales count (descending)
-    topProducts.sort((a, b) => {
-      if (b.soldLast8Days !== a.soldLast8Days) {
-        return b.soldLast8Days - a.soldLast8Days;
-      }
-      return (b.views || 0) - (a.views || 0);
-    });
-    
-    // Limit to top 3
-    topProducts = topProducts.slice(0, 3);
-    
-    // console.log("📦 Top products after sorting:", topProducts.map(p => ({ 
-    //   id: p._id, 
-    //   title: p.title, 
-    //   soldLast8Days: p.soldLast8Days 
-    // })));
-  } else {
-    // Fallback: Use ProductPerformance if no recent sales
-    // console.log("⚠️ No products with sales in last 8 days, using ProductPerformance fallback");
-    topProducts = await ProductPerformance.aggregate([
-      // 1️⃣ Join products collection
-      {
-        $lookup: {
-          from: "products",
-          localField: "product",
-          foreignField: "_id",
-          as: "productDetails",
-        },
-      },
-      { $unwind: "$productDetails" },
-      { $match: { "productDetails.status": "active" } },
+    })
+    .filter((p) => p.soldLast8Days >= MIN_UNITS_LAST_8_DAYS)
+    .sort((a, b) => {
+      if (b.rankingScore !== a.rankingScore) return b.rankingScore - a.rankingScore;
+      if (b.soldLast8Days !== a.soldLast8Days) return b.soldLast8Days - a.soldLast8Days;
+      if ((b.views || 0) !== (a.views || 0)) return (b.views || 0) - (a.views || 0);
+      return new Date(b.createdAt) - new Date(a.createdAt);
+    })
+    .slice(0, MAX_RESULTS);
 
-      // 2️⃣ Sort by sales, views, createdAt
-      {
-        $sort: {
-          totalSales: -1,
-          views: -1,
-          "productDetails.createdAt": -1,
-        },
+  if (products.length === 0) {
+    const payload = {
+      status: "success",
+      results: 0,
+      data: [],
+      rankingMeta: {
+        source: "sales_8d",
+        windowDays: 8,
+        minUnitsThreshold: MIN_UNITS_LAST_8_DAYS,
+        reason:
+          "No products met the best-seller threshold in the last 8 days. Showing none to avoid misleading fallback ranking.",
       },
-      { $limit: 3 },
-
-      // 3️⃣ Merge productDetails into root
-      {
-        $replaceRoot: {
-          newRoot: { $mergeObjects: ["$productDetails", "$$ROOT"] },
-        },
-      },
-
-      // 4️⃣ Join category info from Category collection
-      {
-        $lookup: {
-          from: "categories",
-          localField: "category",
-          foreignField: "_id",
-          as: "categoryDetails",
-        },
-      },
-      { $unwind: { path: "$categoryDetails", preserveNullAndEmptyArrays: true } },
-
-      // 5️⃣ Join seller info from User collection
-      {
-        $lookup: {
-          from: "users",
-          localField: "createdBy",
-          foreignField: "_id",
-          as: "seller",
-        },
-      },
-      { $unwind: { path: "$seller", preserveNullAndEmptyArrays: true } },
-
-      // 6️⃣ Project only required fields + shopSlug
-      {
-        $project: {
-          _id: 1,
-          title: 1,
-          slug: 1,
-          description: 1,
-          price: 1,
-          originalPrice: 1,
-          category: "$categoryDetails",
-          stockQuantity: 1,
-          productImages: 1,
-          tags: 1,
-          organic: 1,
-          featured: 1,
-          productType: 1,
-          status: 1,
-          createdBy: 1,
-          discount: 1,
-          discountType: 1,
-          discountExpires: 1,
-          totalSales: 1,
-          totalQuantitySold: 1,
-          views: 1,
-          rating: 1,
-          currentStock: 1,
-          createdAt: 1,
-          shopSlug: "$seller.sellerProfile.shopSlug",
-          shopPicture: "$seller.sellerProfile.shopPicture",
-        },
-      },
-    ]);
-    
-    // Add soldLast8Days as 0 for fallback products
-    topProducts = topProducts.map((p) => ({
-      ...p,
-      soldLast8Days: 0,
-    }));
+    };
+    bestSellersCache = {
+      expiresAt: Date.now() + BEST_SELLERS_CACHE_TTL_MS,
+      payload,
+    };
+    return res.status(200).json(payload);
   }
 
-  if (!topProducts || topProducts.length === 0) {
-    return next(new AppError("No best-selling products found", 404));
-  }
-
-  // console.log("📦 Final top products:", topProducts.map(p => ({ 
-  //   id: p._id, 
-  //   title: p.title, 
-  //   soldLast8Days: p.soldLast8Days || 0 
-  // })));
-  // console.log("==========================================\n");
-
-  // 🔹 Apply presigned URLs for product images and shop picture
-  topProducts = await Promise.all(
-    topProducts.map(async (p) => {
-      // Product images presigned URL
+  products = await Promise.all(
+    products.map(async (p) => {
       let productImages = p.productImages || [];
       productImages = await Promise.all(
-        productImages.map(
-          async (img) => await getPresignedUrl(`products/${img}`)
-        )
+        productImages.map(async (img) => await getPresignedUrl(`products/${img}`))
       );
 
-      // Seller shop picture presigned URL
       let shopPictureUrl = null;
       if (p.shopPicture) {
         shopPictureUrl = await getPresignedUrl(`shopPicture/${p.shopPicture}`);
       }
 
-      // soldLast8Days is already added above
-      const soldLast8Days = p.soldLast8Days || 0;
-      
-      // console.log(`📦 Product "${p.title || 'Unknown'}" (${p._id}): Sold=${soldLast8Days} (Last 8 days)`);
-
       return {
         ...p,
         productImages,
         shopPicture: shopPictureUrl,
-        soldLast8Days, // Add sales count for last 8 days
       };
     })
   );
 
-  res.status(200).json({
+  const payload = {
     status: "success",
-    results: topProducts.length,
-    data: topProducts,
-  });
+    results: products.length,
+    data: products,
+    rankingMeta: {
+      source: "weighted_sales_score",
+      windows: { primary: "8d", secondary: "30d" },
+      minUnitsThreshold: MIN_UNITS_LAST_8_DAYS,
+      weights: SCORE_WEIGHTS,
+      eligibility: {
+        status: "active",
+        adminApproved: true,
+        stockQuantityGreaterThan: 0,
+      },
+    },
+  };
+
+  bestSellersCache = {
+    expiresAt: Date.now() + BEST_SELLERS_CACHE_TTL_MS,
+    payload,
+  };
+
+  res.status(200).json(payload);
 });
 
 // ✅ Get Seller Earnings (Today and Overall)
