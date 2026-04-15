@@ -165,7 +165,7 @@ app.use("/api/seller/stripe-connect", stripeConnectRoutes);
 // KYC Routes
 app.use("/api/seller/kyc", kycRoutes);
 app.use("/api/seller/delivery-partners", sellerDeliveryPartnersRoute);
-app.use("/api/admin/kyc", adminKYCRoutes);
+app.use("/api/seller/products", sellerProductRoutes);
 
 // new api design
 app.use("/api/terramartz/users", userLatestRoutes);
@@ -180,6 +180,7 @@ app.use("/api/stats", platformStatsRoutes);
 //admin routes
 app.use("/api/admin", adminAuditLogger);
 app.use("/api/admin/auth", adminAuthRoutes);
+app.use("/api/admin/kyc", adminKYCRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/admin/categories", adminCategoriesRoutes);
 app.use("/api/admin/user-transactions", adminPurchaseRoutes);
@@ -187,7 +188,6 @@ app.use("/api/admin/users", adminUserRoutes);
 app.use("/api/admin/products", adminProductRoutes);
 app.use("/api/admin/accounts", adminManagementRoutes);
 app.use("/api/admin/promo-code", adminPromoCodeRoute);
-app.use("/api/seller/products", sellerProductRoutes);
 app.use("/api/admin/platform-fee", adminPlatformFeeRoute);
 app.use("/api/admin/dashboard", adminDashboardRoute);
 app.use("/api/admin/logs", adminLogsRoutes);

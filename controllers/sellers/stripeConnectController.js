@@ -304,6 +304,33 @@ export const getAccountStatus = catchAsync(async (req, res, next) => {
       previousStatus !== stripeStatus ||
       previousOnboarding !== onboardingComplete;
 
+    const req = account.requirements || {};
+    const currentlyDue = Array.isArray(req.currently_due) ? req.currently_due : [];
+    const eventuallyDue = Array.isArray(req.eventually_due)
+      ? req.eventually_due
+      : [];
+    const pastDue = Array.isArray(req.past_due) ? req.past_due : [];
+
+    const requirementsSummary = {
+      currentlyDueCount: currentlyDue.length,
+      eventuallyDueCount: eventuallyDue.length,
+      pastDueCount: pastDue.length,
+      disabledReason: req.disabled_reason || null,
+      hasOutstandingFields:
+        currentlyDue.length > 0 || eventuallyDue.length > 0,
+    };
+
+    let dashboardPhase;
+    if (isRestricted) {
+      dashboardPhase = "restricted";
+    } else if (account.charges_enabled && account.payouts_enabled) {
+      dashboardPhase = "active";
+    } else if (account.details_submitted) {
+      dashboardPhase = "pending_verification";
+    } else {
+      dashboardPhase = "onboarding";
+    }
+
     if (needsSave) {
       seller.sellerProfile.stripeAccountStatus = stripeStatus;
       seller.sellerProfile.stripeOnboardingComplete = onboardingComplete;
@@ -340,16 +367,17 @@ export const getAccountStatus = catchAsync(async (req, res, next) => {
       hasAccount: true,
       accountId,
       accountStatus: stripeStatus,
+      dashboardPhase,
       onboardingComplete: account.details_submitted,
       chargesEnabled: account.charges_enabled,
       payoutsEnabled: account.payouts_enabled,
       detailsSubmitted: account.details_submitted,
-      // ✅ Send requirements info so frontend can show what's needed
+      requirementsSummary,
       requirements: isRestricted
         ? {
-            disabledReason: account.requirements?.disabled_reason,
-            pastDue: account.requirements?.past_due || [],
-            currentlyDue: account.requirements?.currently_due || [],
+            disabledReason: req.disabled_reason,
+            pastDue,
+            currentlyDue,
           }
         : null,
     });

@@ -4,6 +4,16 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { Admin } from "../../models/super-admin/admin.js";
 
+const mapAdminForClient = (user) => ({
+  _id: user._id,
+  name: user.name,
+  email: user.email,
+  phoneNumber: user.phoneNumber ? Number.parseInt(user.phoneNumber) : null,
+  role: user.role,
+  isActive: user.isActive,
+  permissions: user.permissions,
+});
+
 // {
 //     "email": "admin@terramartz.com",
 //     "password": "Admin@123"
@@ -43,15 +53,7 @@ export const adminLogin = catchAsync(async (req, res, next) => {
     status: "success",
     token,
     data: {
-      user: {
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        phoneNumber: Number.parseInt(user.phoneNumber),
-        role: user.role,
-        isActive: user.isActive,
-        permissions: user.permissions,
-      },
+      user: mapAdminForClient(user),
     },
   });
 });
@@ -88,15 +90,21 @@ export const adminRegister = catchAsync(async (req, res, next) => {
     status: "success",
     token,
     data: {
-      user: {
-        _id: newAdmin._id,
-        name: newAdmin.name,
-        email: newAdmin.email,
-        phoneNumber: newAdmin.phoneNumber,
-        role: newAdmin.role,
-        isActive: newAdmin.isActive,
-        permissions: newAdmin.permissions,
-      },
+      user: mapAdminForClient(newAdmin),
+    },
+  });
+});
+
+export const getAdminMe = catchAsync(async (req, res, next) => {
+  const user = req.user;
+  if (!user) {
+    return next(new AppError("Admin not found", 404));
+  }
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      user: mapAdminForClient(user),
     },
   });
 });
