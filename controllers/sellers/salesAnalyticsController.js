@@ -273,7 +273,12 @@ export const getSellerCompleteAnalytics = catchAsync(async (req, res, next) => {
 // 127.0.0.1:7345/api/seller/dashboard/analytics?startDate=2025-07-01&endDate=2025-10-20&filterProducts=true
 export const getSellerDashboardAnalytics = catchAsync(async (req, res) => {
   const sellerId = req.user._id || req.user.id;
-    const { startDate, endDate, filterProducts = "false" } = req.query;
+    const {
+      startDate,
+      endDate,
+      filterProducts = "false",
+      includeTopSelling = "false",
+    } = req.query;
 
     // console.log("\n========== SELLER DASHBOARD ANALYTICS ==========");
     // console.log("📦 Seller ID:", sellerId, "Type:", typeof sellerId);
@@ -405,38 +410,40 @@ export const getSellerDashboardAnalytics = catchAsync(async (req, res) => {
   // console.log("📦 Total Products:", productCounts[0]?.totalProducts || 0);
   // console.log("📦 Active Products:", productCounts[0]?.activeProducts || 0);
 
-  // 🔹 Top Selling Products (by quantity sold)
-  // console.log("📦 Fetching top selling products...");
-  const topSellingAgg = await Purchase.aggregate([
-    { $unwind: "$products" },
-    { $match: matchPurchase },
-    {
-      $group: {
-        _id: "$products.product",
-        totalQuantity: { $sum: "$products.quantity" },
+  let topSelling = [];
+  if (String(includeTopSelling).toLowerCase() === "true") {
+    // 🔹 Optional heavy block: Top Selling Products (by quantity sold)
+    const topSellingAgg = await Purchase.aggregate([
+      { $unwind: "$products" },
+      { $match: matchPurchase },
+      {
+        $group: {
+          _id: "$products.product",
+          totalQuantity: { $sum: "$products.quantity" },
+        },
       },
-    },
-    { $sort: { totalQuantity: -1 } },
-    { $limit: 5 },
-  ]);
+      { $sort: { totalQuantity: -1 } },
+      { $limit: 5 },
+    ]);
 
-  const topSellingProductIds = topSellingAgg.map((p) => p._id);
-  const topSellingProducts = await Product.find({
-    _id: { $in: topSellingProductIds },
-  })
-    .select("title slug price productImages")
-    .lean();
+    const topSellingProductIds = topSellingAgg.map((p) => p._id);
+    const topSellingProducts = await Product.find({
+      _id: { $in: topSellingProductIds },
+    })
+      .select("title slug price productImages")
+      .lean();
 
-  // Map sales quantities to products
-  const topSelling = topSellingProducts.map((product) => {
-    const salesData = topSellingAgg.find(
-      (s) => String(s._id) === String(product._id)
-    );
-    return {
-      ...product,
-      quantitySold: salesData?.totalQuantity || 0,
-    };
-  });
+    // Map sales quantities to products
+    topSelling = topSellingProducts.map((product) => {
+      const salesData = topSellingAgg.find(
+        (s) => String(s._id) === String(product._id)
+      );
+      return {
+        ...product,
+        quantitySold: salesData?.totalQuantity || 0,
+      };
+    });
+  }
 
   // console.log("📦 Top selling products count:", topSelling.length);
   // console.log("==========================================\n");

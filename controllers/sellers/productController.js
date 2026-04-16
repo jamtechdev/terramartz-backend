@@ -651,6 +651,9 @@ export const getProductWithPerformance = catchAsync(async (req, res, next) => {
 
 export const getAllProductWithPerformance = catchAsync(
   async (req, res, next) => {
+    const escapeRegex = (value) =>
+      value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
     // 🔹 Build base query object first (plain JavaScript object)
     let baseQuery = {}; // Base query object
 
@@ -665,22 +668,37 @@ export const getAllProductWithPerformance = catchAsync(
       baseQuery.adminApproved = true;
     }
 
-    // 🔍 search support - use regex for exact/partial title match (more precise than text search)
+    // 🔍 Search support
+    // Use indexed text search for regular terms; prefix regex only for 1-char quick lookups.
     if (req.query.search) {
-      const searchTerm = req.query.search.trim();
-      // Use regex for case-insensitive partial match on title (more precise)
-      // This ensures "eggplant" only matches products with "eggplant" in the title
-      baseQuery.title = { $regex: searchTerm, $options: "i" };
+      const searchTerm = String(req.query.search).trim();
+      if (searchTerm.length >= 2) {
+        baseQuery.$text = { $search: searchTerm };
+      } else {
+        baseQuery.title = {
+          $regex: `^${escapeRegex(searchTerm)}`,
+          $options: "i",
+        };
+      }
     }
 
-    // 🔹 Category filter support
+    // 🔹 Category filter support (slug-only)
     if (
-      req.query.categoryId &&
-      req.query.categoryId !== "null" &&
-      req.query.categoryId !== "undefined"
+      req.query.categorySlug &&
+      req.query.categorySlug !== "null" &&
+      req.query.categorySlug !== "undefined"
     ) {
-      baseQuery.category = req.query.categoryId;
-      console.log("🔍 Filtering by categoryId:", req.query.categoryId);
+      const categorySlug = String(req.query.categorySlug).trim().toLowerCase();
+      const matchedCategory = await Category.findOne({ slug: categorySlug })
+        .select("_id")
+        .lean();
+      if (matchedCategory?._id) {
+        baseQuery.category = matchedCategory._id;
+      } else {
+        // Force empty result for unknown category slug.
+        baseQuery.category = "__invalid_category__";
+      }
+      console.log("🔍 Filtering by categorySlug:", categorySlug);
     }
 
     const total = await Product.countDocuments(baseQuery);

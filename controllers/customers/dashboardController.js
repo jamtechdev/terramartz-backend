@@ -152,7 +152,7 @@ export const getActiveOrders = catchAsync(async (req, res, next) => {
 export const getCustomerDashboardStats = catchAsync(async (req, res, next) => {
   // Handle both _id and id formats
   const userId = req.user._id || req.user.id;
-  
+
   if (!userId) {
     return next(new AppError("User not authenticated", 401));
   }
@@ -166,24 +166,7 @@ export const getCustomerDashboardStats = catchAsync(async (req, res, next) => {
 
   // ==================== 1️⃣ TOTAL ORDERS ====================
   const buyerMatch = purchaseBuyerMatch(req);
-  const userIdString = String(userId);
-  const userDoc = await User.findById(userId).select("createdAt").lean();
-
-  const totalOrders = await Purchase.countDocuments(buyerMatch);
-
-  const monthlyOrders = await Purchase.countDocuments({
-    ...buyerMatch,
-    createdAt: { $gte: startOfMonth, $lte: endOfMonth },
-  });
-
-  // ==================== 2️⃣ TOTAL SPENT ====================
-  const totalSpentResult = await Purchase.aggregate([
-    { $match: buyerMatch },
-    { $group: { _id: null, total: { $sum: "$totalAmount" } } },
-  ]);
-
-  const totalSpent =
-    totalSpentResult.length > 0 ? totalSpentResult[0].total : 0;
+  const userKeys = userIdVariants(req);
 
   const prevStart = new Date(
     new Date().getFullYear(),
@@ -192,54 +175,69 @@ export const getCustomerDashboardStats = catchAsync(async (req, res, next) => {
   );
   const prevEnd = new Date(new Date().getFullYear(), new Date().getMonth(), 0);
 
-  const prevMonthSpentResult = await Purchase.aggregate([
-    {
-      $match: {
-        ...buyerMatch,
-        createdAt: { $gte: prevStart, $lte: prevEnd },
+  // Run independent queries in parallel for faster dashboard response.
+  const [
+    userDoc,
+    totalOrders,
+    monthlyOrders,
+    totalSpentResult,
+    prevMonthSpentResult,
+    loyaltyResult,
+  ] = await Promise.all([
+    User.findById(userId).select("createdAt").lean(),
+    Purchase.countDocuments(buyerMatch),
+    Purchase.countDocuments({
+      ...buyerMatch,
+      createdAt: { $gte: startOfMonth, $lte: endOfMonth },
+    }),
+    Purchase.aggregate([
+      { $match: buyerMatch },
+      { $group: { _id: null, total: { $sum: "$totalAmount" } } },
+    ]),
+    Purchase.aggregate([
+      {
+        $match: {
+          ...buyerMatch,
+          createdAt: { $gte: prevStart, $lte: prevEnd },
+        },
       },
-    },
-    { $group: { _id: null, total: { $sum: "$totalAmount" } } },
+      { $group: { _id: null, total: { $sum: "$totalAmount" } } },
+    ]),
+    LoyaltyPoint.aggregate([
+      {
+        $match: {
+          user: { $in: userKeys },
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          earnedPoints: {
+            $sum: {
+              $cond: [{ $eq: ["$type", "earn"] }, "$points", 0]
+            }
+          },
+          redeemedPoints: {
+            $sum: {
+              $cond: [{ $eq: ["$type", "redeem"] }, { $abs: "$points" }, 0]
+            }
+          }
+        }
+      },
+      {
+        $project: {
+          totalPoints: { $subtract: ["$earnedPoints", "$redeemedPoints"] }
+        }
+      }
+    ]),
   ]);
 
+  const totalSpent =
+    totalSpentResult.length > 0 ? totalSpentResult[0].total : 0;
   const prevSpent =
     prevMonthSpentResult.length > 0 ? prevMonthSpentResult[0].total : 0;
   const spentChange =
     prevSpent === 0 ? 100 : ((totalSpent - prevSpent) / prevSpent) * 100;
-
-  // ==================== 3️⃣ LOYALTY POINTS ====================
-  // Calculate loyalty points by summing earned points and subtracting redeemed points
-  const loyaltyResult = await LoyaltyPoint.aggregate([
-    {
-      $match: {
-        $or: [
-          { user: userIdString },
-          ...(req.user._id ? [{ user: String(req.user._id) }] : []),
-          ...(req.user.id ? [{ user: String(req.user.id) }] : []),
-        ].filter(Boolean),
-      },
-    },
-    {
-      $group: {
-        _id: null,
-        earnedPoints: {
-          $sum: {
-            $cond: [{ $eq: ["$type", "earn"] }, "$points", 0]
-          }
-        },
-        redeemedPoints: {
-          $sum: {
-            $cond: [{ $eq: ["$type", "redeem"] }, { $abs: "$points" }, 0]
-          }
-        }
-      }
-    },
-    {
-      $project: {
-        totalPoints: { $subtract: ["$earnedPoints", "$redeemedPoints"] }
-      }
-    }
-  ]);
 
   const loyaltyPoints =
     loyaltyResult.length > 0 ? loyaltyResult[0].totalPoints : 0;

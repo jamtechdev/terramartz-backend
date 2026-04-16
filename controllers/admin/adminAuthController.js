@@ -34,7 +34,12 @@ export const adminLogin = catchAsync(async (req, res, next) => {
   }
 
   if (!user.isActive) {
-    return next(new AppError("Account is deactivated", 401));
+    return next(
+      new AppError(
+        "Account is deactivated. Please contact administrator.",
+        401,
+      ),
+    );
   }
 
   const isMatch = await bcrypt.compare(password, user.password);

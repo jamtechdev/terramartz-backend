@@ -116,5 +116,9 @@ productSchema.pre("save", async function (next) {
 
 // Full text search index
 productSchema.index({ title: "text", description: "text", tags: "text" });
+// Helps storefront listing queries that filter by approval/category and sort/paginate
+productSchema.index({ adminApproved: 1, category: 1, title: 1, createdAt: -1 });
+// Helps seller-only listing queries
+productSchema.index({ createdBy: 1, category: 1, title: 1, createdAt: -1 });
 
 export const Product = mongoose.model("Product", productSchema);

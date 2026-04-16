@@ -16,29 +16,27 @@ function cartUserKeys(req) {
 // 1️⃣ Add to Cart
 export const addToCart = catchAsync(async (req, res, next) => {
   const { product: productId, quantity = 1 } = req.body;
+  const qty = Number(quantity) || 1;
+  if (qty < 1) {
+    return next(new AppError("Quantity must be at least 1", 400));
+  }
 
-  // Check if product exists
-  const product = await Product.findById(productId);
+  // Check if product exists (fetch only required fields for faster reads)
+  const product = await Product.findById(productId).select(
+    "_id stockQuantity createdBy",
+  );
   if (!product) return next(new AppError("Product not found", 404));
 
-  // Handle both _id and id formats for user (Cart model stores user as String)
+  // Cart model stores user as String; normalize once for indexed lookup
   const userId = req.user._id || req.user.id;
   const userIdString = String(userId);
 
-  // Check if Cart already has this product for this user (try multiple ID formats)
-  let cartItem = await Cart.findOne({
-    product: productId,
-    $or: [
-      { user: userIdString },
-      { user: userId },
-      { user: req.user._id },
-      { user: req.user.id },
-    ]
-  });
+  // Uses unique compound index on { product, user }
+  let cartItem = await Cart.findOne({ product: productId, user: userIdString });
 
   if (cartItem) {
     // Product already in cart → update quantity
-    const totalQuantity = cartItem.quantity + quantity;
+    const totalQuantity = cartItem.quantity + qty;
 
     // Validate stock
     if (totalQuantity > product.stockQuantity) {
@@ -69,7 +67,7 @@ export const addToCart = catchAsync(async (req, res, next) => {
     cartItem = await Cart.create({
       product: productId,
       user: userIdString, // Store as String to match Cart schema
-      quantity,
+      quantity: qty,
       sellerId: product.createdBy, // Store product owner as sellerId
     });
   }
