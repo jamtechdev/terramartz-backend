@@ -32,6 +32,10 @@ router.route('/:id/status')
 router.route('/:id/approval')
   .patch(protectAdmin('Products', 'Full'), adminProductController.updateProductApproval);
 
+// UPDATE product featured flag
+router.route('/:id/featured')
+  .patch(protectAdmin('Products', 'Full'), adminProductController.updateProductFeatured);
+
 // EXPORT all products to CSV
 router.route('/export/csv')
   .get(protectAdmin('Products', 'View'), adminProductController.exportAllProductsCSV);

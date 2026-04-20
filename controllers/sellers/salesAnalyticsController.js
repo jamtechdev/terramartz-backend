@@ -549,6 +549,12 @@ export const getSellerDashboardAnalytics = catchAsync(async (req, res) => {
 });
 
 export const getBestSellers = catchAsync(async (req, res, next) => {
+  const toS3Key = (value, folder) => {
+    if (!value || typeof value !== "string") return null;
+    if (value.startsWith("http")) return value;
+    return value.startsWith(`${folder}/`) ? value : `${folder}/${value}`;
+  };
+
   if (
     bestSellersCache.payload &&
     bestSellersCache.expiresAt > Date.now()
@@ -774,12 +780,16 @@ export const getBestSellers = catchAsync(async (req, res, next) => {
     products.map(async (p) => {
       let productImages = p.productImages || [];
       productImages = await Promise.all(
-        productImages.map(async (img) => await getPresignedUrl(`products/${img}`))
+        productImages.map(async (img) =>
+          await getPresignedUrl(toS3Key(img, "products")),
+        ),
       );
 
       let shopPictureUrl = null;
       if (p.shopPicture) {
-        shopPictureUrl = await getPresignedUrl(`shopPicture/${p.shopPicture}`);
+        shopPictureUrl = await getPresignedUrl(
+          toS3Key(p.shopPicture, "shopPicture"),
+        );
       }
 
       return {

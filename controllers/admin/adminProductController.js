@@ -286,6 +286,44 @@ export const updateProductApproval = catchAsync(async (req, res, next) => {
 });
 
 // ==========================
+// UPDATE PRODUCT FEATURED FLAG
+// ==========================
+export const updateProductFeatured = catchAsync(async (req, res, next) => {
+  const { id } = req.params;
+  let { featured } = req.body;
+
+  if (typeof featured === "string") {
+    featured = featured === "true" || featured === "1";
+  }
+  if (typeof featured !== "boolean") {
+    return next(
+      new AppError("featured is required and must be true or false", 400),
+    );
+  }
+
+  const product = await Product.findById(id);
+  if (!product) {
+    return next(new AppError("Product not found", 404));
+  }
+
+  const updatedProduct = await Product.findByIdAndUpdate(
+    id,
+    { featured },
+    { new: true, runValidators: true },
+  );
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      _id: updatedProduct._id,
+      title: updatedProduct.title,
+      featured: updatedProduct.featured,
+      updatedAt: updatedProduct.updatedAt,
+    },
+  });
+});
+
+// ==========================
 // DELETE PRODUCT (Soft delete by setting status to archived)
 // ==========================
 export const deleteProduct = catchAsync(async (req, res, next) => {
