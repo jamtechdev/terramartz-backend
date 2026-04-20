@@ -648,63 +648,39 @@ export const getProductWithPerformance = catchAsync(async (req, res, next) => {
 });
 
 // GET All Products (Public)
-
 export const getAllProductWithPerformance = catchAsync(
   async (req, res, next) => {
-    const escapeRegex = (value) =>
-      value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const escapeRegex = (v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-    // 🔹 Build base query object first (plain JavaScript object)
-    let baseQuery = {}; // Base query object
+    // ── 1. Build base filter ────────────────────────────────────────────────
+    const baseQuery = {};
 
-    if (
-      req.user &&
-      req.user.role === "seller" &&
-      req.query.sellerOnly === "true"
-    ) {
+    if (req.user?.role === "seller" && req.query.sellerOnly === "true") {
       baseQuery.createdBy = req.user._id;
-      console.log("🔍 Filtering products for seller:", req.user._id);
     } else {
       baseQuery.adminApproved = true;
     }
 
-    // 🔍 Search support
-    // Use indexed text search for regular terms; prefix regex only for 1-char quick lookups.
     if (req.query.search) {
-      const searchTerm = String(req.query.search).trim();
-      if (searchTerm.length >= 2) {
-        baseQuery.$text = { $search: searchTerm };
-      } else {
-        baseQuery.title = {
-          $regex: `^${escapeRegex(searchTerm)}`,
-          $options: "i",
-        };
-      }
+      const term = String(req.query.search).trim();
+      baseQuery[term.length >= 2 ? "$text" : "title"] =
+        term.length >= 2
+          ? { $search: term }
+          : { $regex: `^${escapeRegex(term)}`, $options: "i" };
     }
 
-    // 🔹 Category filter support (slug-only)
-    if (
-      req.query.categorySlug &&
-      req.query.categorySlug !== "null" &&
-      req.query.categorySlug !== "undefined"
-    ) {
-      const categorySlug = String(req.query.categorySlug).trim().toLowerCase();
-      const matchedCategory = await Category.findOne({ slug: categorySlug })
-        .select("_id")
-        .lean();
-      if (matchedCategory?._id) {
-        baseQuery.category = matchedCategory._id;
-      } else {
-        // Force empty result for unknown category slug.
-        baseQuery.category = "__invalid_category__";
-      }
-      console.log("🔍 Filtering by categorySlug:", categorySlug);
+    // Category slug resolution — must stay sequential: result feeds baseQuery
+    const rawSlug = req.query.categorySlug;
+    if (rawSlug && rawSlug !== "null" && rawSlug !== "undefined") {
+      const slug = String(rawSlug).trim().toLowerCase();
+      const cat = await Category.findOne({ slug }).select("_id").lean();
+      // Use a guaranteed-no-match ObjectId instead of a magic string
+      baseQuery.category = cat?._id ?? new mongoose.Types.ObjectId();
     }
 
-    const total = await Product.countDocuments(baseQuery);
-    const page = req.query.page * 1 || 1;
-    let limit = req.query.limit * 1 || 100;
-    if (limit <= 0) limit = 100;
+    // ── 2. Pagination & sort params ─────────────────────────────────────────
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.max(1, parseInt(req.query.limit) || 100);
     const skip = (page - 1) * limit;
     const sortBy = String(req.query.sortBy || "name");
 
@@ -714,95 +690,214 @@ export const getAllProductWithPerformance = catchAsync(
       "price-high": { price: -1 },
     };
 
-    const baseProductQuery = Product.find(baseQuery)
-      .populate({
-        path: "category",
-        select:
-          "_id name description image logo createdBy createdAt updatedAt slug",
+    // ── 3. Fetch data ───────────────────────────────────────────────────────
+    let total, rawProducts;
+
+    if (sortBy === "rating") {
+      // ✅ FIX: Was loading ALL products into memory then sorting/slicing in JS.
+      //    Now: $lookup joins performance data in the DB → sort by rating in DB
+      //    → skip/limit in DB. Only the requested page is returned.
+      //
+      // ✅ FIX: countDocuments + aggregate run in parallel via Promise.all.
+      //
+      // Note: ProductPerformance._id and .product are Strings. Product._id is
+      //       likely an ObjectId. $toString converts it for the join so types match.
+      const [countResult, aggDocs] = await Promise.all([
+        Product.countDocuments(baseQuery),
+        Product.aggregate([
+          { $match: baseQuery },
+
+          // Join performance — convert _id to String to match .product (String)
+          {
+            $lookup: {
+              from: "productperformances",
+              let: { pid: { $toString: "$_id" } },
+              pipeline: [
+                { $match: { $expr: { $eq: ["$product", "$$pid"] } } },
+                {
+                  $project: {
+                    rating: 1,
+                    views: 1,
+                    totalSales: 1,
+                    currentStock: 1,
+                  },
+                },
+              ],
+              as: "_perf",
+            },
+          },
+          {
+            $addFields: {
+              _perf: {
+                $ifNull: [
+                  { $arrayElemAt: ["$_perf", 0] },
+                  {
+                    rating: 0,
+                    views: 0,
+                    totalSales: 0,
+                    currentStock: "$stockQuantity",
+                  },
+                ],
+              },
+            },
+          },
+
+          // Sort + paginate in the DB — no more full collection in Node memory
+          { $sort: { "_perf.rating": -1 } },
+          { $skip: skip },
+          { $limit: limit },
+
+          // Inline populates (replaces the two .populate() calls)
+          {
+            $lookup: {
+              from: "categories",
+              localField: "category",
+              foreignField: "_id",
+              pipeline: [
+                {
+                  $project: {
+                    name: 1,
+                    description: 1,
+                    image: 1,
+                    logo: 1,
+                    slug: 1,
+                    createdAt: 1,
+                    updatedAt: 1,
+                  },
+                },
+              ],
+              as: "_category",
+            },
+          },
+          {
+            $lookup: {
+              from: "users",
+              localField: "createdBy",
+              foreignField: "_id",
+              pipeline: [
+                {
+                  $project: {
+                    firstName: 1,
+                    middleName: 1,
+                    lastName: 1,
+                    profilePicture: 1,
+                    businessDetails: 1,
+                    sellerProfile: 1,
+                  },
+                },
+              ],
+              as: "_createdBy",
+            },
+          },
+
+          {
+            $project: {
+              title: 1,
+              slug: 1,
+              description: 1,
+              price: 1,
+              originalPrice: 1,
+              stockQuantity: 1,
+              productImages: 1,
+              tags: 1,
+              organic: 1,
+              featured: 1,
+              productType: 1,
+              status: 1,
+              createdAt: 1,
+              updatedAt: 1,
+              _perf: 1,
+              category: { $arrayElemAt: ["$_category", 0] },
+              createdBy: { $arrayElemAt: ["$_createdBy", 0] },
+            },
+          },
+        ]),
+      ]);
+
+      total = countResult;
+      // aggDocs are already plain objects; performance is embedded as _perf
+      rawProducts = aggDocs.map((doc) => ({ doc, perf: doc._perf }));
+    } else {
+      // ✅ FIX: countDocuments and find now run in parallel — saves one round-trip.
+      // ✅ FIX: .lean() skips Mongoose document hydration — 5-10× faster for
+      //         large result sets since we only need plain data for the response.
+      const [countResult, docs] = await Promise.all([
+        Product.countDocuments(baseQuery),
+        Product.find(baseQuery)
+          .populate({
+            path: "category",
+            select: "_id name description image logo slug createdAt updatedAt",
+          })
+          .populate({
+            path: "createdBy",
+            select:
+              "firstName middleName lastName profilePicture businessDetails sellerProfile",
+          })
+          .sort(dbSortMap[sortBy] || { title: 1 })
+          .skip(skip)
+          .limit(limit)
+          .lean(), // ✅ plain objects — no Mongoose overhead
+      ]);
+
+      total = countResult;
+
+      // ✅ FIX: Only fetch performance for the current page (was fetching for all products).
+      //    Also select only the 4 fields actually used in the response.
+      const productIds = docs.map((p) => p._id.toString());
+      const perfs = await ProductPerformance.find({
+        product: { $in: productIds },
       })
-      .populate({
-        path: "createdBy",
-        select:
-          "firstName middleName lastName profilePicture businessDetails sellerProfile",
-      });
+        .select("product rating views totalSales currentStock")
+        .lean();
 
-    // For rating sort we need performance data to determine the order.
-    let products =
-      sortBy === "rating"
-        ? await baseProductQuery
-        : await baseProductQuery
-            .sort(dbSortMap[sortBy] || { title: 1 })
-            .skip(skip)
-            .limit(limit);
+      const performanceMap = Object.fromEntries(
+        perfs.map((p) => [p.product, p]),
+      );
 
-    // 🔹 Fetch all performances for these products in ONE query
-    const productIds = products.map((p) => p._id);
-    const performances = await ProductPerformance.find({
-      product: { $in: productIds },
-    }).lean();
+      rawProducts = docs.map((doc) => ({
+        doc,
+        perf: performanceMap[doc._id.toString()] ?? null,
+      }));
+    }
 
-    // 🔹 Map performance to products
-    const performanceMap = {};
-    performances.forEach((p) => {
-      performanceMap[p.product.toString()] = p;
-    });
-
-    // 🔹 Build response with direct S3 URLs
-    let productsWithPerformance = products.map((p) => {
-      // 🔹 Direct S3 URLs for product images
-      let productImages = (p.productImages || []).map((img) =>
+    // ── 4. Shared response formatter ────────────────────────────────────────
+    const formatted = rawProducts.map(({ doc: p, perf }) => {
+      const productImages = (p.productImages || []).map((img) =>
         getDirectUrl(`products/${img}`),
       );
 
       let seller = null;
-      if (p.createdBy) {
-        // 🔹 Profile Picture
-        let profilePictureUrl = null;
-        if (p.createdBy.profilePicture) {
-          profilePictureUrl = getDirectUrl(
-            `profilePicture/${p.createdBy.profilePicture}`,
-          );
-        }
-
-        // 🔹 Shop Picture
-        let shopPictureUrl = null;
-        if (p.createdBy.sellerProfile?.shopPicture) {
-          shopPictureUrl = getDirectUrl(
-            `shopPicture/${p.createdBy.sellerProfile.shopPicture}`,
-          );
-        }
-
+      const cb = p.createdBy;
+      if (cb) {
         seller = {
-          _id: p.createdBy._id,
-          name: `${p.createdBy.firstName || ""} ${
-            p.createdBy.middleName || ""
-          } ${p.createdBy.lastName || ""}`
+          _id: cb._id,
+          name: `${cb.firstName || ""} ${cb.middleName || ""} ${cb.lastName || ""}`
             .replace(/\s+/g, " ")
             .trim(),
-          profilePicture: profilePictureUrl,
-          shopName: p.createdBy.businessDetails?.businessName || null,
-          shopLocation: p.createdBy.businessDetails?.businessLocation || null,
-          shopPicture: shopPictureUrl, // 🔹 Added shopPicture
+          profilePicture: cb.profilePicture
+            ? getDirectUrl(`profilePicture/${cb.profilePicture}`)
+            : null,
+          shopName: cb.businessDetails?.businessName ?? null,
+          shopLocation: cb.businessDetails?.businessLocation ?? null,
+          shopPicture: cb.sellerProfile?.shopPicture
+            ? getDirectUrl(`shopPicture/${cb.sellerProfile.shopPicture}`)
+            : null,
         };
       }
 
-      // 🔹 Format category with presigned URLs
-      let categoryData = null;
+      let category = null;
       if (p.category) {
-        const categoryImageUrl = p.category.image
-          ? getDirectUrl(`categories/${p.category.image}`)
-          : null;
-        const categoryLogoUrl = p.category.logo
-          ? getDirectUrl(`categories/${p.category.logo}`)
-          : null;
-
-        categoryData = {
+        category = {
           _id: p.category._id,
           name: p.category.name,
           description: p.category.description,
           slug: p.category.slug,
-          image: categoryImageUrl,
-          logo: categoryLogoUrl,
+          image: p.category.image
+            ? getDirectUrl(`categories/${p.category.image}`)
+            : null,
+          logo: p.category.logo
+            ? getDirectUrl(`categories/${p.category.logo}`)
+            : null,
           createdAt: p.category.createdAt,
           updatedAt: p.category.updatedAt,
         };
@@ -815,7 +910,7 @@ export const getAllProductWithPerformance = catchAsync(
         description: p.description,
         price: p.price,
         originalPrice: p.originalPrice,
-        category: categoryData, // Properly formatted category object with _id, name, slug
+        category,
         stockQuantity: p.stockQuantity,
         productImages,
         tags: p.tags || [],
@@ -825,7 +920,7 @@ export const getAllProductWithPerformance = catchAsync(
         status: p.status,
         createdAt: p.createdAt,
         updatedAt: p.updatedAt,
-        performance: performanceMap[p._id.toString()] || {
+        performance: perf ?? {
           views: 0,
           totalSales: 0,
           rating: 0,
@@ -835,21 +930,13 @@ export const getAllProductWithPerformance = catchAsync(
       };
     });
 
-    // API-level sorting with pagination
-    if (sortBy === "rating") {
-      productsWithPerformance.sort(
-        (a, b) => (b.performance?.rating || 0) - (a.performance?.rating || 0),
-      );
-      productsWithPerformance = productsWithPerformance.slice(skip, skip + limit);
-    }
-
     res.status(200).json({
       status: "success",
-      results: productsWithPerformance.length,
-      total: total, // Total count of all products matching the query
+      results: formatted.length,
+      total,
       page,
       limit,
-      products: productsWithPerformance,
+      products: formatted,
     });
   },
 );
