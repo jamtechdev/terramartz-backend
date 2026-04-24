@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import { v4 as uuidv4 } from "uuid";
 import { ROLE_PERMISSIONS } from "../../controllers/common/adminPermissionMatrix.js";
+import { getSmsPhoneValidationError } from "../../utils/phoneSmsValidation.js";
 
 const adminSchema = new mongoose.Schema(
   {
@@ -20,7 +21,9 @@ const adminSchema = new mongoose.Schema(
       trim: true,
       validate: {
         validator: function (v) {
-          return !v || /^\+?\d{10,15}$/.test(v);
+          if (v == null || v === "") return true;
+          const d = String(v).replace(/\D/g, "");
+          return getSmsPhoneValidationError(d) == null;
         },
         message: "Invalid phone number format!",
       },

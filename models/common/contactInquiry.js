@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import { v4 as uuidv4 } from "uuid";
+import { getSmsPhoneValidationError } from "../../utils/phoneSmsValidation.js";
 
 const contactInquirySchema = new mongoose.Schema(
   {
@@ -29,7 +30,9 @@ const contactInquirySchema = new mongoose.Schema(
       trim: true,
       validate: {
         validator: function (v) {
-          return !v || /^\+?[\d\s\-()]+$/.test(v);
+          if (v == null || v === "") return true;
+          const d = String(v).replace(/\D/g, "");
+          return getSmsPhoneValidationError(d) == null;
         },
         message: "Please enter a valid phone number",
       },

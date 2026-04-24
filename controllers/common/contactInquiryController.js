@@ -1,6 +1,7 @@
 import { ContactInquiry } from "../../models/common/contactInquiry.js";
 import catchAsync from "../../utils/catchasync.js";
 import AppError from "../../utils/apperror.js";
+import { getSmsPhoneValidationError } from "../../utils/phoneSmsValidation.js";
 import APIFeatures from "../../utils/apiFeatures.js";
 import { assignTicketToLeastLoadedAdmin, reassignTicket, getAssignmentStatistics } from "../../utils/ticketAssignment.js";
 
@@ -19,11 +20,22 @@ export const submitInquiry = catchAsync(async (req, res, next) => {
     );
   }
 
+  if (phoneNumber != null && String(phoneNumber).trim() !== "") {
+    const pd = String(phoneNumber).replace(/\D/g, "");
+    const smsErr = getSmsPhoneValidationError(pd);
+    if (smsErr) {
+      return next(new AppError(smsErr, 400));
+    }
+  }
+
   // Create inquiry
   const inquiryData = {
     fullName,
     email,
-    phoneNumber: phoneNumber || undefined,
+    phoneNumber:
+      phoneNumber != null && String(phoneNumber).trim() !== ""
+        ? `+${String(phoneNumber).replace(/\D/g, "")}`
+        : undefined,
     inquiryType,
     subject,
     message,

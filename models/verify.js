@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import { v4 as uuidv4 } from "uuid";
+import { getSmsPhoneValidationError } from "../utils/phoneSmsValidation.js";
 
 const verifySchema = new mongoose.Schema(
   {
@@ -13,7 +14,9 @@ const verifySchema = new mongoose.Schema(
       trim: true,
       validate: {
         validator: function (v) {
-          return !v || /^\+?\d{10,15}$/.test(v); // Validate phone number only if provided
+          if (v == null || v === "") return true;
+          const d = String(v).replace(/\D/g, "");
+          return getSmsPhoneValidationError(d) == null;
         },
         message: "Invalid phone number format!",
       },

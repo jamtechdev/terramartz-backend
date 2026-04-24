@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { v4 as uuidv4 } from "uuid";
 import crypto from "crypto";
 import slugify from "slugify";
+import { getSmsPhoneValidationError } from "../utils/phoneSmsValidation.js";
 
 const userSchema = new mongoose.Schema(
   {
@@ -112,7 +113,9 @@ const userSchema = new mongoose.Schema(
       trim: true,
       validate: {
         validator: function (v) {
-          return !v || /^\+?\d{10,15}$/.test(v); // Validate phone number only if provided
+          if (v == null || v === "") return true;
+          const d = String(v).replace(/\D/g, "");
+          return getSmsPhoneValidationError(d) == null;
         },
         message: "Invalid phone number format!",
       },

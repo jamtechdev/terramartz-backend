@@ -13,6 +13,7 @@ import Email from "../utils/vefiryEmail.js";
 
 import { User } from "../models/users.js";
 import { ProfileUpdateVerification } from "../models/common/ProfileUpdateVerification.js";
+import { getSmsPhoneValidationError } from "../utils/phoneSmsValidation.js";
 
 const client = twilio(
   process.env.TWILIO_ACCOUNT_SID,
@@ -64,17 +65,37 @@ export const sendPhoneNumberVerificationOtpDirect = async (
   phoneNumber,
   otp,
 ) => {
+  const digitsOnly = String(phoneNumber || "").replace(/\D/g, "");
+  const smsErr = getSmsPhoneValidationError(digitsOnly);
+  if (smsErr) {
+    throw new AppError(smsErr, 400);
+  }
+  const to = `+${digitsOnly}`;
   try {
-    const smsOtpRes = await client.messages.create({
+    await client.messages.create({
       body: `Your OTP is ${otp}. It is valid for 5 minutes.`,
       from: process.env.TWILIO_PHONE_NUMBER,
-      to: phoneNumber,
+      to,
     });
 
     return { status: "success", message: "OTP sent successfully!" };
   } catch (error) {
     console.log("Twilio error:", error);
-    throw new Error("Failed to send OTP. Try again later");
+    const code = error?.code;
+    if (code === 21211 || code === 21614) {
+      throw new AppError(
+        "This number cannot receive text messages. Use a valid mobile number with country code—for example +1 and a 10-digit US or Canada number.",
+        400,
+      );
+    }
+    if (code === 21608) {
+      throw new AppError(
+        "We could not send a text to this number. Try another mobile number or contact support if it keeps happening.",
+        400,
+      );
+    }
+    if (error instanceof AppError) throw error;
+    throw new AppError("Failed to send OTP. Try again later", 500);
   }
 };
 
@@ -122,6 +143,12 @@ export const startUpdateVerification = catchAsync(async (req, res, next) => {
       `profilePicture/${profilePictureKey}`,
       "image/jpeg",
     );
+  }
+
+  if (isPhoneNew) {
+    const pd = String(phoneNumber || "").replace(/\D/g, "");
+    const smsErr = getSmsPhoneValidationError(pd);
+    if (smsErr) return next(new AppError(smsErr, 400));
   }
 
   if (!isEmailNew && !isPhoneNew) {
@@ -183,6 +210,11 @@ export const startUpdateVerification = catchAsync(async (req, res, next) => {
   const now = new Date();
 
   // Build update payload with profile picture info
+  const normalizedPendingPhone =
+    isPhoneNew && phoneNumber
+      ? `+${String(phoneNumber).replace(/\D/g, "")}`
+      : phoneNumber;
+
   const updatePayload = {
     user: userId,
     pendingData: {
@@ -190,7 +222,7 @@ export const startUpdateVerification = catchAsync(async (req, res, next) => {
       lastName,
       businessName,
       email,
-      phoneNumber,
+      phoneNumber: normalizedPendingPhone,
       bio,
       emailNotifications,
       pushNotifications,
@@ -255,11 +287,19 @@ export const startUpdateVerification = catchAsync(async (req, res, next) => {
   if (!isEmailNew && isPhoneNew) {
     try {
       await sendPhoneNumberVerificationOtpDirect(
-        phoneNumber,
+        normalizedPendingPhone,
         updatedVerification.phoneOtp,
       );
     } catch (error) {
-      return next(new AppError(error.message, 500));
+      if (error instanceof AppError) return next(error);
+      return next(
+        new AppError(
+          error?.message
+            ? `Failed to send phone OTP: ${error.message}`
+            : "Failed to send phone OTP",
+          500,
+        ),
+      );
     }
   }
 
@@ -375,8 +415,14 @@ export const resendVerificationOtp = async (req, res, next) => {
           newPhoneOtp,
         );
       } catch (err) {
+        if (err instanceof AppError) return next(err);
         return next(
-          new AppError("Failed to send phone OTP: " + err.message, 500),
+          new AppError(
+            err?.message
+              ? `Failed to send phone OTP: ${err.message}`
+              : "Failed to send phone OTP",
+            500,
+          ),
         );
       }
 
@@ -430,8 +476,14 @@ export const verifyEmailOtp = async (req, res, next) => {
           verification.phoneOtp,
         );
       } catch (err) {
+        if (err instanceof AppError) return next(err);
         return next(
-          new AppError("Failed to send phone OTP: " + err.message, 500),
+          new AppError(
+            err?.message
+              ? `Failed to send phone OTP: ${err.message}`
+              : "Failed to send phone OTP",
+            500,
+          ),
         );
       }
     } else {

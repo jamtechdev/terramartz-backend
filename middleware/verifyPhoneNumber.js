@@ -5,6 +5,7 @@ import twilio from "twilio";
 import { User } from "../models/users.js";
 import AppError from "../utils/apperror.js";
 import { Verify } from "../models/verify.js";
+import { getSmsPhoneValidationError } from "../utils/phoneSmsValidation.js";
 
 const client = twilio(
   process.env.TWILIO_ACCOUNT_SID,
@@ -13,7 +14,13 @@ const client = twilio(
 
 export const sendPhoneNumberVerificationOtp = async (req, res, next) => {
   try {
-    const { phoneNumber } = req.body;
+    const { phoneNumber: rawPhone } = req.body;
+    const digitsOnly = String(rawPhone || "").replace(/\D/g, "");
+    const smsErr = getSmsPhoneValidationError(digitsOnly);
+    if (smsErr) {
+      return next(new AppError(smsErr, 400));
+    }
+    const phoneNumber = `+${digitsOnly}`;
 
     const findPhoneNumber = await Verify.findOne({ phoneNumber: phoneNumber });
 
@@ -42,6 +49,23 @@ export const sendPhoneNumberVerificationOtp = async (req, res, next) => {
       });
     } catch (error) {
       console.log("Twilio error:", error);
+      const code = error?.code;
+      if (code === 21211 || code === 21614) {
+        return next(
+          new AppError(
+            "This number cannot receive text messages. Use a valid mobile number with country code—for example +1 and a 10-digit US or Canada number.",
+            400,
+          ),
+        );
+      }
+      if (code === 21608) {
+        return next(
+          new AppError(
+            "We could not send a text to this number. Try another mobile number or contact support if it keeps happening.",
+            400,
+          ),
+        );
+      }
       return next(new AppError("Failed to send OTP. Try again later", 500));
     }
     return res.status(200).json({
@@ -55,7 +79,12 @@ export const sendPhoneNumberVerificationOtp = async (req, res, next) => {
 
 export const verifyPhoneNumber = async (req, res, next) => {
   const { phoneNumber, phoneOtp, phone, otp } = req.body;
-  const num = phoneNumber || phone;
+  const raw = phoneNumber || phone;
+  const digitsOnly = String(raw || "").replace(/\D/g, "");
+  if (!digitsOnly) {
+    return next(new AppError("Phone number is required", 400));
+  }
+  const num = `+${digitsOnly}`;
   const code = phoneOtp || otp;
   try {
     const verifyDocs = await Verify.findOne({ phoneNumber: num });
