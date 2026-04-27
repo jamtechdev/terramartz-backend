@@ -2,6 +2,7 @@ import { Cart } from "../../models/customers/cart.js";
 import { Product } from "../../models/seller/product.js";
 import catchAsync from "../../utils/catchasync.js";
 import AppError from "../../utils/apperror.js";
+import { isPurchasablePublicProduct } from "../../utils/productStorefront.js";
 import { getPresignedUrl } from "../../utils/awsS3.js";
 
 /** Cart.user is stored as string; JWT may expose _id vs id in different shapes */
@@ -23,9 +24,14 @@ export const addToCart = catchAsync(async (req, res, next) => {
 
   // Check if product exists (fetch only required fields for faster reads)
   const product = await Product.findById(productId).select(
-    "_id stockQuantity createdBy",
+    "_id stockQuantity createdBy adminApproved status",
   );
   if (!product) return next(new AppError("Product not found", 404));
+  if (!isPurchasablePublicProduct(product)) {
+    return next(
+      new AppError("This product is not available to add to the cart.", 400),
+    );
+  }
 
   // Cart model stores user as String; normalize once for indexed lookup
   const userId = req.user._id || req.user.id;
@@ -88,6 +94,12 @@ export const updateCartItem = catchAsync(async (req, res, next) => {
   }).populate("product");
 
   if (!cartItem) return next(new AppError("Cart item not found", 404));
+
+  if (!isPurchasablePublicProduct(cartItem.product)) {
+    return next(
+      new AppError("This product is no longer available in that quantity.", 400),
+    );
+  }
 
   // Validate stock
   if (quantity > cartItem.product.stockQuantity) {

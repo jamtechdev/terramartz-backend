@@ -12,7 +12,11 @@ export const getSellerPortalStats = catchAsync(async (req, res, next) => {
   // Run aggregates in parallel for performance
   const [activeFarmers, totalProducts, monthlyOrders, ratingAgg] = await Promise.all([
     User.countDocuments({ role: "seller" }),
-    Product.countDocuments({ status: "active" }), // Count only active products
+    Product.countDocuments({
+      status: "active",
+      adminApproved: true,
+      stockQuantity: { $gt: 0 },
+    }),
     Purchase.countDocuments({
       createdAt: { $gte: startOfMonth, $lte: now },
     }),

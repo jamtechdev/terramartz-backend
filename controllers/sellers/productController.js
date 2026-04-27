@@ -14,6 +14,10 @@ import { Category } from "../../models/super-admin/category.js";
 import catchAsync from "../../utils/catchasync.js";
 import AppError from "../../utils/apperror.js";
 import APIFeatures from "../../utils/apiFeatures.js";
+import {
+  normalizeSellerProductStatus,
+  syncLifecycleWithStock,
+} from "../../utils/productStorefront.js";
 
 // =================== CREATE PRODUCT ===================
 
@@ -28,10 +32,11 @@ export const createProduct = catchAsync(async (req, res, next) => {
   try {
     req.body.createdBy = req.user._id;
 
-    // Force adminApproved to false and status to pending on creation
+    // Force adminApproved to false on creation; status from seller if allowed
     req.body.adminApproved = false;
     req.body.approvedBy = undefined;
-    req.body.status = "pending";
+    req.body.status =
+      normalizeSellerProductStatus(req.body.status) || "pending";
 
     // Debug: Log files received and category
     console.log("📸 Files received:", {
@@ -219,7 +224,8 @@ export const createProduct = catchAsync(async (req, res, next) => {
 
 // GET All Products (with search + filter + pagination)
 export const getAllProducts = catchAsync(async (req, res, next) => {
-  let query = Product.find({ createdBy: req.user._id });
+  const sellerId = String(req.user._id);
+  let query = Product.find({ createdBy: { $in: [req.user._id, sellerId] } });
 
   // 🔍 search support
   if (req.query.search) {
@@ -322,6 +328,10 @@ export const updateProduct = catchAsync(async (req, res, next) => {
     product.category = req.body.category || product.category;
     product.inventoryAlert = req.body.inventoryAlert ?? product.inventoryAlert;
     if (req.body.productImages) product.productImages = req.body.productImages;
+
+    const sellerStatus = normalizeSellerProductStatus(req.body.status);
+    if (sellerStatus) product.status = sellerStatus;
+    syncLifecycleWithStock(product);
 
     await product.save({ session });
 
@@ -466,6 +476,7 @@ export const incrementSalesAndUpdateStock = catchAsync(
         throw new AppError("Not enough stock in Product", 400);
 
       product.stockQuantity -= quantity;
+      syncLifecycleWithStock(product);
       await product.save({ session });
 
       // 🔥 4️⃣ Prepare productImages with direct S3 URLs
@@ -659,6 +670,8 @@ export const getAllProductWithPerformance = catchAsync(
       baseQuery.createdBy = req.user._id;
     } else {
       baseQuery.adminApproved = true;
+      baseQuery.status = "active";
+      baseQuery.stockQuantity = { $gt: 0 };
     }
 
     if (req.query.search) {
@@ -945,7 +958,7 @@ export const getAllProductWithPerformance = catchAsync(
 // ✅ Seller Products (with Top Selling Option)
 export const getSellerProductsWithPerformance = catchAsync(
   async (req, res, next) => {
-    const sellerId = req.user._id;
+    const sellerId = String(req.user._id);
     const isTopSelling = req.query.topSelling === "true";
     const page = req.query.page * 1 || 1;
     const limit = req.query.limit * 1 || 10;
@@ -1001,8 +1014,11 @@ export const getSellerProductsWithPerformance = catchAsync(
 
     // 🔹 Product Query
     let query = isTopSelling
-      ? Product.find({ _id: { $in: productIds }, createdBy: sellerId })
-      : Product.find({ createdBy: sellerId });
+      ? Product.find({
+          _id: { $in: productIds },
+          createdBy: { $in: [req.user._id, sellerId] },
+        })
+      : Product.find({ createdBy: { $in: [req.user._id, sellerId] } });
 
     if (req.query.search) {
       query = query.find({ $text: { $search: req.query.search } });

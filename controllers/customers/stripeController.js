@@ -16,6 +16,11 @@ import { PlatformFee } from "../../models/super-admin/platformFee.js";
 import { SellerSettlement } from "../../models/seller/sellerSettlement.js";
 import { calculateSettlementDate } from "../../utils/settlementHelper.js";
 import { checkInventoryAlert } from "../../utils/inventoryAlertHelper.js";
+import {
+  isPurchasablePublicProduct,
+  syncLifecycleWithStock,
+  adjustProductStockWithLifecycleSync,
+} from "../../utils/productStorefront.js";
 
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
@@ -212,6 +217,11 @@ export const calculateOrderBreakdown = async (
   for (const item of products) {
     const product = await Product.findById(item.product);
     if (!product) throw new Error(`Product not found: ${item.product}`);
+    if (!isPurchasablePublicProduct(product)) {
+      throw new Error(
+        `Product "${product.title || "Item"}" is not available for purchase.`,
+      );
+    }
 
     const productSellerId = String(product.createdBy);
     sellerIdsSet.add(productSellerId);
@@ -742,14 +752,14 @@ export const webhookPayment = async (req, res, next) => {
         const product = await Product.findById(item.product);
         if (!product) continue;
 
-        // Update stock
-        await Product.findByIdAndUpdate(item.product, {
-          $inc: { stockQuantity: -item.quantity },
-        });
+        product.stockQuantity -= item.quantity;
+        if (product.stockQuantity < 0) product.stockQuantity = 0;
+        syncLifecycleWithStock(product);
+        await product.save();
 
-        // Check inventory alert after stock decrement
-        const updatedStock = product.stockQuantity - item.quantity;
-        await checkInventoryAlert(item.product, { currentStock: updatedStock });
+        await checkInventoryAlert(item.product, {
+          currentStock: product.stockQuantity,
+        });
 
         // Purchase model expects seller as String, so convert to String
         const finalSellerId = String(product.createdBy || product.seller);
@@ -1562,14 +1572,14 @@ export const createOrderImmediately = catchAsync(async (req, res, next) => {
     );
     console.log(`   Seller ID: ${sellerId} (Type: ${typeof sellerId})`);
 
-    // Update stock
-    await Product.findByIdAndUpdate(item.product, {
-      $inc: { stockQuantity: -item.quantity },
-    });
+    product.stockQuantity -= item.quantity;
+    if (product.stockQuantity < 0) product.stockQuantity = 0;
+    syncLifecycleWithStock(product);
+    await product.save();
 
-    // Check inventory alert after stock decrement
-    const updatedStock = product.stockQuantity - item.quantity;
-    await checkInventoryAlert(item.product, { currentStock: updatedStock });
+    await checkInventoryAlert(item.product, {
+      currentStock: product.stockQuantity,
+    });
 
     // Purchase model expects seller as String, so convert to String
     const finalSellerId = String(sellerId);
@@ -2021,6 +2031,9 @@ const createPurchaseFromPaymentIntent = async (paymentIntent) => {
             `Insufficient stock or write conflict for ${item.product}`,
           );
 
+        syncLifecycleWithStock(product);
+        await product.save({ session });
+
         // Check inventory alert after stock decrement (product.stockQuantity is already updated since { new: true })
         await checkInventoryAlert(item.product, {
           session,
@@ -2357,9 +2370,7 @@ const handleRefund = async (charge, options = {}) => {
 
     if (isFullRefund) {
       for (const item of purchase.products) {
-        await Product.findByIdAndUpdate(item.product, {
-          $inc: { stockQuantity: item.quantity },
-        });
+        await adjustProductStockWithLifecycleSync(item.product, item.quantity);
 
         item.timeline.push({
           event: "Stock Restored (Refund)",
@@ -2748,9 +2759,7 @@ const handleDisputeClosed = async (dispute) => {
 
       // Restore stock
       for (const item of purchase.products) {
-        await Product.findByIdAndUpdate(item.product, {
-          $inc: { stockQuantity: item.quantity },
-        });
+        await adjustProductStockWithLifecycleSync(item.product, item.quantity);
 
         item.timeline.push({
           event: "Stock Restored (Dispute Lost)",

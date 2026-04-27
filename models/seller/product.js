@@ -63,7 +63,7 @@ const productSchema = new mongoose.Schema(
     createdBy: { type: String, ref: "User", required: true, index: true },
     farmId: {
       type: String,
-      ref: "Farm",
+      ref: "Farm", 
       index: true,
     },
     farmName: {

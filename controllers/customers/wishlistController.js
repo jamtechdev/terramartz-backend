@@ -3,6 +3,7 @@ import { Product } from "../../models/seller/product.js";
 import { getPresignedUrl } from "../../utils/awsS3.js";
 import catchAsync from "../../utils/catchasync.js";
 import AppError from "../../utils/apperror.js";
+import { isPublicProductDetailVisible } from "../../utils/productStorefront.js";
 
 function wishlistUserId(req) {
   return String(req.user._id || req.user.id);
@@ -24,6 +25,11 @@ export const addToWishlist = catchAsync(async (req, res, next) => {
 
   const product = await Product.findById(productId);
   if (!product) return next(new AppError("Product not found", 404));
+  if (!isPublicProductDetailVisible(product)) {
+    return next(
+      new AppError("This product cannot be added to your wishlist.", 400),
+    );
+  }
 
   const exists = await WishlistProduct.findOne({
     user: userId,

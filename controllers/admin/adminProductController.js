@@ -182,6 +182,15 @@ export const updateProductStatus = catchAsync(async (req, res, next) => {
     return next(new AppError(`Invalid status. Valid statuses are: ${validStatuses.join(', ')}`, 400));
   }
 
+  if (status === 'active' || status === 'inactive') {
+    return next(
+      new AppError(
+        'Only the seller may set listing status to Active or Inactive. Staff control catalog visibility with catalog approval.',
+        403,
+      ),
+    );
+  }
+
   const product = await Product.findById(id);
   if (!product) {
     return next(new AppError("Product not found", 404));
@@ -239,7 +248,7 @@ export const getProductById = catchAsync(async (req, res, next) => {
 // ==========================
 export const updateProductApproval = catchAsync(async (req, res, next) => {
   const { id } = req.params;
-  const { approved, status } = req.body; // Expect explicit approval status
+  const { approved } = req.body;
 
   const product = await Product.findById(id);
   if (!product) {
@@ -247,7 +256,6 @@ export const updateProductApproval = catchAsync(async (req, res, next) => {
   }
 
   let newApprovalStatus;
-  let newStatus;
 
   if (approved !== undefined) {
     newApprovalStatus = approved;
@@ -256,20 +264,11 @@ export const updateProductApproval = catchAsync(async (req, res, next) => {
     newApprovalStatus = !product.adminApproved;
   }
 
-  if (newApprovalStatus) {
-    newStatus = 'active';
-  } else {
-    // If rejecting, set to rejected or keep as pending/draft? 
-    // If explicitly rejected, use 'rejected'. If just unapproved (toggle), use 'pending'.
-    // If status is provided in body (e.g. 'rejected'), use that.
-    newStatus = status || 'rejected';
-  }
-
+  // Catalog approval only — listing status (active/inactive/etc.) is seller-controlled.
   const updatedProduct = await Product.findByIdAndUpdate(
     id,
     { 
       adminApproved: newApprovalStatus,
-      status: newStatus,
       approvedBy: newApprovalStatus ? (req.user ? req.user._id : null) : null
     },
     { new: true, runValidators: true }

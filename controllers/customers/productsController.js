@@ -4,6 +4,7 @@ import { User } from "../../models/users.js";
 import { getPresignedUrl } from "../../utils/awsS3.js";
 import catchAsync from "../../utils/catchasync.js";
 import AppError from "../../utils/apperror.js";
+import { isPublicProductDetailVisible } from "../../utils/productStorefront.js";
 // import { getPresignedUrl } from "../../utils/awsS3.js";
 
 export const getProductByProductSlug = catchAsync(async (req, res, next) => {
@@ -19,6 +20,10 @@ export const getProductByProductSlug = catchAsync(async (req, res, next) => {
   });
 
   if (!product) {
+    return next(new AppError("Product not found", 404));
+  }
+
+  if (!isPublicProductDetailVisible(product)) {
     return next(new AppError("Product not found", 404));
   }
 
@@ -106,7 +111,7 @@ export const getProductByProductSlug = catchAsync(async (req, res, next) => {
         views: 0,
         totalSales: 0,
         rating: 0,
-        currentStock: productCopy.stockQuantity || 0,
+        currentStock: product.stockQuantity || 0,
       },
       seller: sellerInfo,
     },

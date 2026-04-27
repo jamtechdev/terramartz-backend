@@ -353,6 +353,9 @@ export const getCategoryWithProductsAdvanced = catchAsync(
     if (req.user && req.user.role === "seller" && req.query.sellerOnly === "true") {
       matchObj.createdBy = req.user._id;
       console.log("🔍 Filtering products for seller:", req.user._id);
+    } else {
+      matchObj.adminApproved = true;
+      matchObj.stockQuantity = { $gt: 0 };
     }
 
     // Search by title (minimum 2 letters)
