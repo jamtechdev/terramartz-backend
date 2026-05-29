@@ -123,6 +123,7 @@ app.use(
         "https://terramartz.com",
         "https://www.terramartz.com",
         "https://admin.terramartz.com",
+        "https://api.terramartz.com",
       ];
 
       // Check if origin is allowed
